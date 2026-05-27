@@ -1,0 +1,54 @@
+{
+    "experiment": {
+        "name": "Starlink Altitude-Inclination-Plane Sweep",
+        "sampling": "grid",
+        "threads": 0
+    },
+    "base_config": {
+        "simulation": {
+            "duration_days": 1,
+            "timestep_s": 60,
+            "epoch_jd": 2451545.0
+        },
+        "constellation": {
+            "type": "walker",
+            "sats_per_plane": 22,
+            "phasing_factor": 13,
+            "eccentricity": 0.0
+        },
+        "satellite": {
+            "mass_kg": 260,
+            "drag_coefficient": 2.2,
+            "drag_area_m2": 2.0,
+            "reflectivity": 1.3,
+            "srp_area_m2": 2.0
+        },
+        "forces": {
+            "gravity": true,
+            "j2": true,
+            "drag": true,
+            "srp": true
+        },
+        "metrics": {
+            "coverage": {
+                "enabled": true,
+                "grid_resolution_deg": 5,
+                "min_elevation_deg": 25,
+                "sample_interval_s": 300
+            },
+            "sunlight": true,
+            "drag": true,
+            "delta_v": true,
+            "revisit": true
+        }
+    },
+    "sweep": {
+        "altitude_km":      [500, 550, 600],
+        "inclination_deg":  [53, 70, 97],
+        "planes":           [24, 48, 72]
+    },
+    "output": {
+        "directory": "output",
+        "experiment_name": "starlink_sweep"
+    }
+}

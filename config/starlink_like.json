@@ -1,0 +1,50 @@
+{
+    "simulation": {
+        "name": "Starlink-like Gen1 Constellation",
+        "duration_days": 1,
+        "timestep_s": 60,
+        "epoch_jd": 2451545.0
+    },
+    "constellation": {
+        "type": "walker",
+        "altitude_km": 550,
+        "inclination_deg": 53,
+        "total_satellites": 1584,
+        "planes": 72,
+        "phasing_factor": 13,
+        "eccentricity": 0.0,
+        "arg_of_perigee_deg": 0.0
+    },
+    "satellite": {
+        "mass_kg": 260,
+        "drag_coefficient": 2.2,
+        "drag_area_m2": 2.0,
+        "reflectivity": 1.3,
+        "srp_area_m2": 2.0
+    },
+    "forces": {
+        "gravity": true,
+        "j2": true,
+        "drag": true,
+        "srp": true,
+        "moon": false,
+        "sun_gravity": false
+    },
+    "metrics": {
+        "coverage": {
+            "enabled": true,
+            "grid_resolution_deg": 5,
+            "min_elevation_deg": 25,
+            "sample_interval_s": 300
+        },
+        "sunlight": true,
+        "drag": true,
+        "delta_v": true,
+        "revisit": true,
+        "links": false
+    },
+    "output": {
+        "directory": "output",
+        "run_name": "starlink_like"
+    }
+}

@@ -1,0 +1,165 @@
+#include "core/ConfigLoader.h"
+#include <fstream>
+#include <stdexcept>
+
+using json = nlohmann::json;
+
+static double getOrDefault(const json& j, const std::string& key, double def) {
+    return j.contains(key) ? j.at(key).get<double>() : def;
+}
+static int getOrDefaultI(const json& j, const std::string& key, int def) {
+    return j.contains(key) ? j.at(key).get<int>() : def;
+}
+static bool getOrDefaultB(const json& j, const std::string& key, bool def) {
+    return j.contains(key) ? j.at(key).get<bool>() : def;
+}
+static std::string getOrDefaultS(const json& j, const std::string& key, const std::string& def) {
+    return j.contains(key) ? j.at(key).get<std::string>() : def;
+}
+
+WalkerConfig ConfigLoader::parseWalker(const json& j) {
+    WalkerConfig c;
+    c.altitude_km        = getOrDefault(j, "altitude_km",        c.altitude_km);
+    c.inclination_deg    = getOrDefault(j, "inclination_deg",    c.inclination_deg);
+    c.total_satellites   = getOrDefaultI(j, "total_satellites",  c.total_satellites);
+    c.planes             = getOrDefaultI(j, "planes",            c.planes);
+    c.phasing_factor     = getOrDefaultI(j, "phasing_factor",    c.phasing_factor);
+    c.eccentricity       = getOrDefault(j, "eccentricity",       c.eccentricity);
+    c.arg_of_perigee_deg = getOrDefault(j, "arg_of_perigee_deg", c.arg_of_perigee_deg);
+
+    // sats_per_plane is an alternative way to specify
+    if (j.contains("sats_per_plane") && !j.contains("total_satellites")) {
+        int spp = j.at("sats_per_plane").get<int>();
+        c.total_satellites = c.planes * spp;
+    }
+    return c;
+}
+
+PhysicalProperties ConfigLoader::parseSatellite(const json& j) {
+    PhysicalProperties p;
+    p.mass_kg          = getOrDefault(j, "mass_kg",          p.mass_kg);
+    p.drag_coefficient = getOrDefault(j, "drag_coefficient", p.drag_coefficient);
+    p.drag_area_m2     = getOrDefault(j, "drag_area_m2",     p.drag_area_m2);
+    p.reflectivity     = getOrDefault(j, "reflectivity",     p.reflectivity);
+    p.srp_area_m2      = getOrDefault(j, "srp_area_m2",      p.srp_area_m2);
+    return p;
+}
+
+PhysicsConfig ConfigLoader::parsePhysics(const json& j) {
+    PhysicsConfig p;
+    p.gravity      = getOrDefaultB(j, "gravity",      p.gravity);
+    p.j2           = getOrDefaultB(j, "j2",           p.j2);
+    p.drag         = getOrDefaultB(j, "drag",         p.drag);
+    p.srp          = getOrDefaultB(j, "srp",          p.srp);
+    p.moon_gravity = getOrDefaultB(j, "moon",         p.moon_gravity);
+    p.sun_gravity  = getOrDefaultB(j, "sun_gravity",  p.sun_gravity);
+    return p;
+}
+
+MetricsConfig ConfigLoader::parseMetrics(const json& j) {
+    MetricsConfig m;
+    if (j.contains("coverage")) {
+        const auto& cj = j.at("coverage");
+        if (cj.is_object()) {
+            m.coverage.enabled             = getOrDefaultB(cj, "enabled",             m.coverage.enabled);
+            m.coverage.grid_resolution_deg = getOrDefault(cj, "grid_resolution_deg", m.coverage.grid_resolution_deg);
+            m.coverage.min_elevation_deg   = getOrDefault(cj, "min_elevation_deg",   m.coverage.min_elevation_deg);
+            m.coverage.sample_interval_s   = getOrDefault(cj, "sample_interval_s",   m.coverage.sample_interval_s);
+        } else {
+            m.coverage.enabled = cj.get<bool>();
+        }
+    }
+    m.sunlight = getOrDefaultB(j, "sunlight", m.sunlight);
+    m.drag     = getOrDefaultB(j, "drag",     m.drag);
+    m.delta_v  = getOrDefaultB(j, "delta_v",  m.delta_v);
+    m.revisit  = getOrDefaultB(j, "revisit",  m.revisit);
+    m.links    = getOrDefaultB(j, "links",    m.links);
+    return m;
+}
+
+SimConfig ConfigLoader::parseSimConfig(const json& j) {
+    SimConfig cfg;
+
+    if (j.contains("simulation")) {
+        const auto& s = j.at("simulation");
+        cfg.name          = getOrDefaultS(s, "name",         cfg.name);
+        cfg.duration_days = getOrDefault(s,  "duration_days", cfg.duration_days);
+        cfg.timestep_s    = getOrDefault(s,  "timestep_s",    cfg.timestep_s);
+        cfg.epoch_jd      = getOrDefault(s,  "epoch_jd",      cfg.epoch_jd);
+    }
+    if (j.contains("constellation")) cfg.constellation = parseWalker(j.at("constellation"));
+    if (j.contains("satellite"))     cfg.satellite     = parseSatellite(j.at("satellite"));
+    if (j.contains("forces"))        cfg.physics       = parsePhysics(j.at("forces"));
+    if (j.contains("metrics"))       cfg.metrics       = parseMetrics(j.at("metrics"));
+
+    if (j.contains("output")) {
+        const auto& o = j.at("output");
+        cfg.output_directory = getOrDefaultS(o, "directory", cfg.output_directory);
+        cfg.run_name         = getOrDefaultS(o, "run_name",  cfg.run_name);
+    }
+    return cfg;
+}
+
+SimConfig ConfigLoader::loadSimConfig(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open())
+        throw std::runtime_error("Cannot open config file: " + path);
+    json j;
+    file >> j;
+    return parseSimConfig(j);
+}
+
+MCConfig ConfigLoader::loadMCConfig(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open())
+        throw std::runtime_error("Cannot open MC config file: " + path);
+    json j;
+    file >> j;
+
+    MCConfig mc;
+    if (j.contains("experiment")) {
+        const auto& e = j.at("experiment");
+        mc.name     = getOrDefaultS(e, "name",     mc.name);
+        mc.runs     = getOrDefaultI(e, "runs",     mc.runs);
+        mc.sampling = getOrDefaultS(e, "sampling", mc.sampling);
+        mc.threads  = getOrDefaultI(e, "threads",  mc.threads);
+    }
+
+    if (j.contains("base_config")) mc.base_config = parseSimConfig(j.at("base_config"));
+
+    if (j.contains("sweep")) {
+        for (auto& [key, val] : j.at("sweep").items()) {
+            MCParameterRange range;
+            range.name = key;
+            if (val.is_array()) {
+                for (auto& v : val) range.values.push_back(v.get<double>());
+            }
+            mc.parameters.push_back(std::move(range));
+        }
+    }
+
+    if (j.contains("output")) {
+        const auto& o = j.at("output");
+        mc.output_directory = getOrDefaultS(o, "directory",       mc.output_directory);
+        mc.experiment_name  = getOrDefaultS(o, "experiment_name", mc.experiment_name);
+    }
+    return mc;
+}
+
+void ConfigLoader::applyParameter(SimConfig& cfg, const std::string& name, double value) {
+    // Maps flat parameter names used in MC sweeps to struct fields.
+    if      (name == "altitude_km")       cfg.constellation.altitude_km        = value;
+    else if (name == "inclination_deg")   cfg.constellation.inclination_deg    = value;
+    else if (name == "planes")            cfg.constellation.planes             = static_cast<int>(value);
+    else if (name == "sats_per_plane") {
+        cfg.constellation.total_satellites = cfg.constellation.planes * static_cast<int>(value);
+    }
+    else if (name == "total_satellites")  cfg.constellation.total_satellites   = static_cast<int>(value);
+    else if (name == "phasing_factor")    cfg.constellation.phasing_factor     = static_cast<int>(value);
+    else if (name == "mass_kg")           cfg.satellite.mass_kg                = value;
+    else if (name == "drag_coefficient")  cfg.satellite.drag_coefficient       = value;
+    else if (name == "drag_area_m2")      cfg.satellite.drag_area_m2           = value;
+    else if (name == "timestep_s")        cfg.timestep_s                       = value;
+    else if (name == "duration_days")     cfg.duration_days                    = value;
+    else if (name == "min_elevation_deg") cfg.metrics.coverage.min_elevation_deg = value;
+}
