@@ -145,6 +145,7 @@ private:
     // ImGui overlays
     void drawHUD();
     void drawTelemetryPanel();
+    void drawAxesOverlay();   // ECI frame indicator, bottom-left corner
 
     // Returns the index of the satellite under the given screen-space position,
     // or -1 if no satellite was hit.

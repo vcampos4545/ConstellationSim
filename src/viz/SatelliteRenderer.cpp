@@ -578,9 +578,13 @@ void SatelliteRenderer::drawMercatorWindow()
     const ImVec2 canvas_pos  = ImGui::GetCursorScreenPos();
     const ImVec2 canvas_size = ImGui::GetContentRegionAvail();
 
-    // Earth texture background (equirectangular)
+    // Earth texture background (equirectangular).
+    // VGL loads with stbi_set_flip_vertically_on_load(true), so OpenGL UV(0,0)
+    // is the south pole. Swap V UVs here so north pole appears at top.
     ImGui::Image(static_cast<ImTextureID>(static_cast<uintptr_t>(earth_tex_.id())),
-                 canvas_size);
+                 canvas_size,
+                 ImVec2(0.0f, 1.0f),   // uv_min: top-left → N pole
+                 ImVec2(1.0f, 0.0f));  // uv_max: bottom-right → S pole
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
@@ -861,6 +865,85 @@ void SatelliteRenderer::drawTelemetryPanel()
 }
 
 // ---------------------------------------------------------------------------
+// ECI axes overlay — bottom-left corner
+// ---------------------------------------------------------------------------
+void SatelliteRenderer::drawAxesOverlay()
+{
+    const ImGuiIO& io  = ImGui::GetIO();
+    ImDrawList*    dl  = ImGui::GetForegroundDrawList();
+
+    // Origin: 80 px from the bottom-left corner
+    const float margin = 80.0f;
+    const float arm    = 50.0f;
+    const ImVec2 origin(margin, io.DisplaySize.y - margin);
+
+    // Background disc for contrast
+    dl->AddCircleFilled(origin, arm * 0.65f, IM_COL32(0, 0, 0, 120), 32);
+
+    // Project an ECI unit vector to 2D screen offsets using the camera basis.
+    // camera right  → screen +X
+    // camera up     → screen -Y  (screen Y grows downward)
+    const glm::vec3 cam_right = gui_.camera.getRight();
+    const glm::vec3 cam_up    = gui_.camera.getUpVector();
+
+    auto project = [&](glm::vec3 eci_dir) -> ImVec2 {
+        float sx =  glm::dot(cam_right, eci_dir) * arm;
+        float sy = -glm::dot(cam_up,    eci_dir) * arm;
+        return ImVec2(origin.x + sx, origin.y + sy);
+    };
+
+    // ECI axes: +X = vernal equinox, +Y = completes right-hand frame, +Z = north pole
+    const ImVec2 tip_x = project({1.0f, 0.0f, 0.0f});
+    const ImVec2 tip_y = project({0.0f, 1.0f, 0.0f});
+    const ImVec2 tip_z = project({0.0f, 0.0f, 1.0f});
+
+    const ImU32 col_x = IM_COL32(255,  80,  80, 230);
+    const ImU32 col_y = IM_COL32( 80, 220,  80, 230);
+    const ImU32 col_z = IM_COL32( 80, 140, 255, 230);
+
+    // Draw shafts (2 px wide)
+    dl->AddLine(origin, tip_x, col_x, 2.0f);
+    dl->AddLine(origin, tip_y, col_y, 2.0f);
+    dl->AddLine(origin, tip_z, col_z, 2.0f);
+
+    // Arrowhead triangles
+    auto arrowhead = [&](ImVec2 base, ImVec2 tip, ImU32 col) {
+        float dx = tip.x - base.x, dy = tip.y - base.y;
+        float len = std::sqrt(dx*dx + dy*dy);
+        if (len < 1.0f) return;
+        float ux = dx/len, uy = dy/len;
+        float px = -uy * 4.0f, py = ux * 4.0f;
+        dl->AddTriangleFilled(
+            ImVec2(tip.x, tip.y),
+            ImVec2(tip.x - ux*9.0f + px, tip.y - uy*9.0f + py),
+            ImVec2(tip.x - ux*9.0f - px, tip.y - uy*9.0f - py),
+            col);
+    };
+    arrowhead(origin, tip_x, col_x);
+    arrowhead(origin, tip_y, col_y);
+    arrowhead(origin, tip_z, col_z);
+
+    // Labels (offset slightly past the tip)
+    auto labelOffset = [&](ImVec2 orig_pt, ImVec2 tip_pt, float offset) -> ImVec2 {
+        float dx = tip_pt.x - orig_pt.x, dy = tip_pt.y - orig_pt.y;
+        float len = std::sqrt(dx*dx + dy*dy);
+        if (len < 1.0f) return tip_pt;
+        return ImVec2(tip_pt.x + dx/len*offset, tip_pt.y + dy/len*offset);
+    };
+
+    const ImVec2 lx = labelOffset(origin, tip_x, 12.0f);
+    const ImVec2 ly = labelOffset(origin, tip_y, 12.0f);
+    const ImVec2 lz = labelOffset(origin, tip_z, 12.0f);
+
+    dl->AddText(ImVec2(lx.x - 4, lx.y - 6), col_x, "X");
+    dl->AddText(ImVec2(ly.x - 4, ly.y - 6), col_y, "Y");
+    dl->AddText(ImVec2(lz.x - 4, lz.y - 6), col_z, "Z");
+
+    // Small "ECI" label below the disc
+    dl->AddText(ImVec2(origin.x - 10, origin.y + arm * 0.65f + 4), IM_COL32(200, 200, 200, 180), "ECI");
+}
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 void SatelliteRenderer::run()
@@ -900,6 +983,7 @@ void SatelliteRenderer::run()
         drawHUD();
         drawTelemetryPanel();
         drawMercatorWindow();
+        drawAxesOverlay();
 
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
