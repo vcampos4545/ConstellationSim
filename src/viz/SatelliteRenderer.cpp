@@ -2,6 +2,7 @@
 
 #include "viz/SatelliteRenderer.h"
 #include "core/math/Constants.h"
+#include "environment/EarthModel.h"
 #include <GLFW/glfw3.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
@@ -10,27 +11,38 @@
 
 constexpr double SatelliteRenderer::SPEED_PRESETS[4];
 
-SatelliteRenderer::SatelliteRenderer(const FrameVec& frames,
+SatelliteRenderer::SatelliteRenderer(std::shared_ptr<FrameQueue> queue,
+                                     std::vector<GroundTarget>   ground_targets,
+                                     double                      min_elevation_deg,
                                      int window_w, int window_h)
-    : frames_(frames),
+    : queue_(std::move(queue)),
       gui_(window_w, window_h, "ConstellationSim"),
-      // Start with Earth filling roughly 1/3 of the view, pitched slightly down.
-      orbital_cam_(3.5f, 25.0f, -20.0f, glm::vec3(0.0f))
+      orbital_cam_(3.5f, 25.0f, -20.0f, glm::vec3(0.0f)),
+      min_elev_sin_(static_cast<float>(std::sin(min_elevation_deg * Constants::DEG2RAD)))
 {
     gui_.camera
         .setFOV(45.0f)
-        .setClipPlanes(0.001f, 500.0f);
+        .setClipPlanes(0.001f, 500.0f)
+        .setUp({0.0f, 0.0f, 1.0f});
 
-    // Logarithmic depth buffer eliminates z-fighting between Earth surface
-    // and satellite dots (depth range spans ~7 orders of magnitude).
     gui_.setLogDepth(500.0f);
     gui_.setLighting(true);
 
     orbital_cam_
-        .setMinDistance(1.05f)   // can't go inside Earth
+        .setMinDistance(1.05f)
         .setMaxDistance(20.0f)
         .setZoomSensitivity(0.3f)
-        .setPanSensitivity(0.002f);
+        .setPanSensitivity(0.25f);
+
+    earth_tex_.loadFromFile("resources/textures/earth.jpg");
+    star_tex_.loadFromFile("resources/textures/stars.jpg");
+
+    for (const auto& gt : ground_targets) {
+        GroundTargetViz v;
+        v.name     = gt.name;
+        v.pos_ecef = EarthModel::geodeticToECEF(gt.lat_deg, gt.lon_deg, 0.0);
+        ground_targets_.push_back(std::move(v));
+    }
 
     pb_.wall_prev = glfwGetTime();
 }
@@ -38,61 +50,120 @@ SatelliteRenderer::SatelliteRenderer(const FrameVec& frames,
 // ---------------------------------------------------------------------------
 // Coordinate conversion
 // ---------------------------------------------------------------------------
-glm::vec3 SatelliteRenderer::eciToScene(const Vec3& eci_m) const {
+glm::vec3 SatelliteRenderer::eciToScene(const Vec3 &eci_m) const
+{
     return {
         static_cast<float>(eci_m.x) * SCENE_SCALE,
         static_cast<float>(eci_m.y) * SCENE_SCALE,
-        static_cast<float>(eci_m.z) * SCENE_SCALE
-    };
+        static_cast<float>(eci_m.z) * SCENE_SCALE};
 }
 
 // ---------------------------------------------------------------------------
 // Playback control
 // ---------------------------------------------------------------------------
-int SatelliteRenderer::findFrameIdx(double sim_time_s) const {
-    if (frames_.empty()) return 0;
-    // Binary search: find the largest index where time_s <= sim_time_s
-    int lo = 0, hi = static_cast<int>(frames_.size()) - 1;
-    while (lo < hi) {
-        const int mid = (lo + hi + 1) / 2;
-        if (frames_[mid].time_s <= sim_time_s) lo = mid;
-        else                                    hi = mid - 1;
-    }
-    return lo;
-}
-
-void SatelliteRenderer::advancePlayback() {
+void SatelliteRenderer::advancePlayback()
+{
     const double wall_now = glfwGetTime();
     const double real_dt  = wall_now - pb_.wall_prev;
     pb_.wall_prev = wall_now;
 
-    if (pb_.paused || frames_.empty()) return;
+    if (pb_.paused) return;
 
     pb_.sim_time_s += real_dt * pb_.speed;
 
-    // Loop back to beginning when we reach the last frame
-    const double max_t = frames_.back().time_s;
-    if (pb_.sim_time_s > max_t) {
-        pb_.sim_time_s = std::fmod(pb_.sim_time_s, max_t > 0.0 ? max_t : 1.0);
+    const double max_t = queue_->maxSimTime();
+    if (max_t <= 0.0) {
+        pb_.sim_time_s = 0.0;
+        return;
     }
 
-    pb_.frame_idx = findFrameIdx(pb_.sim_time_s);
+    if (pb_.sim_time_s > max_t) {
+        if (queue_->isSimDone()) {
+            // Loop once the full simulation is captured
+            pb_.sim_time_s = std::fmod(pb_.sim_time_s, max_t);
+            // Looping resets the trail buffer so old trails don't persist
+            trail_buf_.clear();
+            lo_frame_idx_ = -1;
+        } else {
+            // Sim still running — clamp to available data
+            pb_.sim_time_s = max_t;
+        }
+    }
 }
 
-void SatelliteRenderer::updateWindowTitle() {
+// ---------------------------------------------------------------------------
+// Interpolated state
+// ---------------------------------------------------------------------------
+void SatelliteRenderer::buildInterpState()
+{
+    const int new_lo = queue_->findIdx(pb_.sim_time_s);
+    if (new_lo < 0) return;
+
+    SimulationEngine::FrameData lo_frame, hi_frame;
+    const bool has_hi = queue_->copyFramePair(new_lo, new_lo + 1, lo_frame, hi_frame);
+
+    float alpha = 0.0f;
+    if (has_hi) {
+        const double dt = hi_frame.time_s - lo_frame.time_s;
+        if (dt > 0.0)
+            alpha = std::clamp(
+                static_cast<float>((pb_.sim_time_s - lo_frame.time_s) / dt),
+                0.0f, 1.0f);
+    }
+
+    const int n = static_cast<int>(lo_frame.positions.size());
+
+    // Update per-satellite trail buffer when base frame advances
+    if (new_lo != lo_frame_idx_) {
+        if (static_cast<int>(trail_buf_.size()) != n)
+            trail_buf_.assign(n, std::deque<glm::vec3>{});
+
+        for (int i = 0; i < n; ++i) {
+            trail_buf_[i].push_back(eciToScene(lo_frame.positions[i]));
+            while (static_cast<int>(trail_buf_[i].size()) > TRAIL_FRAMES + 1)
+                trail_buf_[i].pop_front();
+        }
+        lo_frame_idx_ = new_lo;
+    }
+
+    // Linearly interpolate positions between lo and hi frames
+    interp_pos_.resize(n);
+    for (int i = 0; i < n; ++i) {
+        const glm::vec3 a = eciToScene(lo_frame.positions[i]);
+        const glm::vec3 b = has_hi ? eciToScene(hi_frame.positions[i]) : a;
+        interp_pos_[i] = glm::mix(a, b, alpha);
+    }
+
+    interp_ecl_ = lo_frame.in_eclipse;
+    interp_sun_ = {
+        static_cast<float>(lo_frame.sun_dir_eci.x),
+        static_cast<float>(lo_frame.sun_dir_eci.y),
+        static_cast<float>(lo_frame.sun_dir_eci.z)};
+
+    // Rotate ground targets from ECEF to ECI for current sim time
+    const double gst = Constants::EARTH_OMEGA_RAD_S * pb_.sim_time_s;
+    gt_scene_pos_.resize(ground_targets_.size());
+    for (size_t i = 0; i < ground_targets_.size(); ++i) {
+        const Vec3 eci = EarthModel::ecefToECI(ground_targets_[i].pos_ecef, gst);
+        gt_scene_pos_[i] = eciToScene(eci);
+    }
+}
+
+void SatelliteRenderer::updateWindowTitle()
+{
     const double t    = pb_.sim_time_s;
     const int days    = static_cast<int>(t / 86400.0);
     const int hrs     = static_cast<int>(std::fmod(t, 86400.0) / 3600.0);
     const int mins    = static_cast<int>(std::fmod(t, 3600.0) / 60.0);
-    const int sats    = frames_.empty() ? 0
-                        : static_cast<int>(frames_[pb_.frame_idx].positions.size());
+    const int n_sats  = static_cast<int>(interp_pos_.size());
 
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-        "ConstellationSim | T+%dd %02dh %02dm | %d sats | Speed: %.0f×%s",
-        days, hrs, mins, sats,
+        "ConstellationSim | T+%dd %02dh %02dm | %d sats | Speed: %.0f×%s%s",
+        days, hrs, mins, n_sats,
         pb_.speed,
-        pb_.paused ? " [PAUSED]" : "");
+        pb_.paused ? " [PAUSED]" : "",
+        !queue_->isSimDone() ? " [SIMULATING...]" : "");
 
     glfwSetWindowTitle(gui_.getWindow(), buf);
 }
@@ -100,13 +171,11 @@ void SatelliteRenderer::updateWindowTitle() {
 // ---------------------------------------------------------------------------
 // Input handling
 // ---------------------------------------------------------------------------
-void SatelliteRenderer::handleInput() {
-    // Pause / resume
-    if (gui_.isKeyJustPressed(GLFW_KEY_SPACE)) {
+void SatelliteRenderer::handleInput()
+{
+    if (gui_.isKeyJustPressed(GLFW_KEY_SPACE))
         pb_.paused = !pb_.paused;
-    }
 
-    // Speed presets: keys 1–4
     const int preset_keys[4] = {GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3, GLFW_KEY_4};
     for (int i = 0; i < 4; ++i) {
         if (gui_.isKeyJustPressed(preset_keys[i])) {
@@ -115,35 +184,21 @@ void SatelliteRenderer::handleInput() {
         }
     }
 
-    // +/- step through presets
-    const bool inc = gui_.isKeyJustPressed(GLFW_KEY_EQUAL)
-                   || gui_.isKeyJustPressed(GLFW_KEY_KP_ADD);
-    const bool dec = gui_.isKeyJustPressed(GLFW_KEY_MINUS)
-                   || gui_.isKeyJustPressed(GLFW_KEY_KP_SUBTRACT);
-    if (inc) {
-        speed_preset_idx_ = std::min(speed_preset_idx_ + 1, 3);
-        pb_.speed = SPEED_PRESETS[speed_preset_idx_];
-    }
-    if (dec) {
-        speed_preset_idx_ = std::max(speed_preset_idx_ - 1, 0);
-        pb_.speed = SPEED_PRESETS[speed_preset_idx_];
-    }
+    const bool inc = gui_.isKeyJustPressed(GLFW_KEY_EQUAL) || gui_.isKeyJustPressed(GLFW_KEY_KP_ADD);
+    const bool dec = gui_.isKeyJustPressed(GLFW_KEY_MINUS) || gui_.isKeyJustPressed(GLFW_KEY_KP_SUBTRACT);
+    if (inc) { speed_preset_idx_ = std::min(speed_preset_idx_ + 1, 3); pb_.speed = SPEED_PRESETS[speed_preset_idx_]; }
+    if (dec) { speed_preset_idx_ = std::max(speed_preset_idx_ - 1, 0); pb_.speed = SPEED_PRESETS[speed_preset_idx_]; }
 
-    // ---------------------------------------------------------------------------
-    // Orbital camera — compute mouse delta manually since VGL needs it explicitly
-    // ---------------------------------------------------------------------------
-    const glm::vec2 mouse_pos = gui_.getMousePosition();
+    const glm::vec2 mouse_pos    = gui_.getMousePosition();
+    const bool left_held         = gui_.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT);
+    const bool right_held        = gui_.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT);
+    const bool just_pressed      = gui_.isMouseButtonJustPressed(GLFW_MOUSE_BUTTON_LEFT)
+                                || gui_.isMouseButtonJustPressed(GLFW_MOUSE_BUTTON_RIGHT);
 
     glm::vec2 mouse_delta{0.0f};
-    if (!first_mouse_frame_) {
-        // Only feed delta when a mouse button is held; OrbitalCamera routes
-        // left-drag to orbit and right-drag to pan internally.
-        const bool held = gui_.isMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT)
-                       || gui_.isMouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT);
-        if (held) mouse_delta = mouse_pos - prev_mouse_pos_;
-    }
-    first_mouse_frame_ = false;
-    prev_mouse_pos_    = mouse_pos;
+    if ((left_held || right_held) && !just_pressed)
+        mouse_delta = mouse_pos - prev_mouse_pos_;
+    prev_mouse_pos_ = mouse_pos;
 
     orbital_cam_.handleInput(gui_, mouse_delta, gui_.getScrollDelta());
     orbital_cam_.applyToCamera(gui_.camera);
@@ -152,100 +207,144 @@ void SatelliteRenderer::handleInput() {
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
-void SatelliteRenderer::drawEarth(const glm::vec3& sun_dir) {
-    gui_.setLightDirection(sun_dir);
-    gui_.setLighting(true);
-    gui_.drawSphere({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R, {0.12f, 0.30f, 0.75f});
+void SatelliteRenderer::drawStarBackground()
+{
+    gui_.drawBackground(star_tex_);
+}
 
-    // Equatorial ring (helps gauge inclination at a glance)
+void SatelliteRenderer::drawEarth()
+{
+    const float sidereal_angle = static_cast<float>(EARTH_ROT_RATE * pb_.sim_time_s);
+
+    // The VGL sphere mesh has Y as its north pole, but ECI uses Z.
+    // Rotate -90° around X so the mesh north (Y) maps to world north (Z),
+    // then apply the sidereal rotation around ECI Z.
+    const auto pole_fix   = glm::angleAxis(-glm::half_pi<float>(), glm::vec3(1.0f, 0.0f, 0.0f));
+    const auto earth_spin = glm::angleAxis(sidereal_angle, glm::vec3(0.0f, 0.0f, 1.0f));
+    const auto rot        = earth_spin * pole_fix;
+
+    gui_.setLightDirection(interp_sun_);
+    gui_.drawTexturedSphere({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R, rot, earth_tex_);
+
     gui_.setLighting(false);
     gui_.drawCircle({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R * 1.002f,
-                    glm::quat(glm::vec3(glm::radians(90.0f), 0.0f, 0.0f)),
+                    glm::quat(glm::vec3(0.0f, 0.0f, 0.0f)),
                     {0.3f, 0.5f, 1.0f});
-
-    // Prime meridian line  (ECEF X-axis direction — drifts in ECI with Earth rotation,
-    // omitted here since we visualize in ECI; the ring is sufficient orientation cue)
     gui_.setLighting(true);
 }
 
-void SatelliteRenderer::drawSunIndicator(const glm::vec3& sun_dir) {
+void SatelliteRenderer::drawSunIndicator()
+{
     gui_.setLighting(false);
     const float len = EARTH_DISPLAY_R * 2.2f;
-    gui_.drawArrow({0.0f, 0.0f, 0.0f}, sun_dir * len, {1.0f, 0.95f, 0.3f}, 1.5f);
+    gui_.drawArrow({0.0f, 0.0f, 0.0f}, interp_sun_ * len, {1.0f, 0.95f, 0.3f}, 1.5f);
     gui_.setLighting(true);
 }
 
-void SatelliteRenderer::drawSatellites(int frame_idx) {
-    if (frames_.empty() || frame_idx < 0) return;
-    const auto& frame = frames_[frame_idx];
-    const int n = static_cast<int>(frame.positions.size());
+void SatelliteRenderer::drawSatellites()
+{
+    if (interp_pos_.empty()) return;
+    const int n = static_cast<int>(interp_pos_.size());
 
     gui_.setLighting(false);
     for (int i = 0; i < n; ++i) {
-        const glm::vec3 pos = eciToScene(frame.positions[i]);
-        const glm::vec3 col = frame.in_eclipse[i]
-            ? glm::vec3{0.30f, 0.30f, 0.55f}   // dim in shadow
-            : glm::vec3{1.00f, 0.95f, 0.65f};   // bright in sunlight
-        gui_.drawSphere(pos, SAT_DOT_R, col);
+        const glm::vec3 col = (i < static_cast<int>(interp_ecl_.size()) && interp_ecl_[i])
+            ? glm::vec3{0.30f, 0.30f, 0.55f}
+            : glm::vec3{1.00f, 0.95f, 0.65f};
+        gui_.drawSphere(interp_pos_[i], SAT_DOT_R, col);
     }
     gui_.setLighting(true);
 }
 
-void SatelliteRenderer::drawTrails(int frame_idx) {
-    if (frames_.empty() || frame_idx <= 0) return;
-    const int n_sats = static_cast<int>(frames_[frame_idx].positions.size());
-
-    // Skip trails for large constellations — too expensive and too cluttered
-    if (n_sats > TRAIL_MAX_SATS) return;
-
-    const int start_frame = std::max(0, frame_idx - TRAIL_FRAMES);
-    const int span        = frame_idx - start_frame;
-    if (span == 0) return;
+void SatelliteRenderer::drawTrails()
+{
+    const int n = static_cast<int>(trail_buf_.size());
+    if (n == 0 || n > TRAIL_MAX_SATS) return;
 
     gui_.setLighting(false);
+    for (int s = 0; s < n; ++s) {
+        const auto& buf = trail_buf_[s];
+        const int sz = static_cast<int>(buf.size());
+        if (sz == 0) continue;
 
-    for (int s = 0; s < n_sats; ++s) {
-        for (int f = start_frame + 1; f <= frame_idx; ++f) {
-            const glm::vec3 a = eciToScene(frames_[f - 1].positions[s]);
-            const glm::vec3 b = eciToScene(frames_[f    ].positions[s]);
-            // Fade trail: newest segment = full brightness, oldest = dim
-            const float t     = static_cast<float>(f - start_frame) / span;
+        // Draw stored trail segments with fade from dim to bright
+        for (int f = 1; f < sz; ++f) {
+            const float t = static_cast<float>(f) / sz;
             const glm::vec3 c = glm::mix(glm::vec3{0.05f, 0.2f, 0.05f},
-                                          glm::vec3{0.2f,  0.8f, 0.3f},  t);
-            gui_.drawLine(a, b, c, 1.0f);
+                                         glm::vec3{0.2f,  0.8f, 0.3f}, t);
+            gui_.drawLine(buf[f - 1], buf[f], c, 1.0f);
+        }
+
+        // Final segment: last stored point → current interpolated position
+        if (s < static_cast<int>(interp_pos_.size()))
+            gui_.drawLine(buf.back(), interp_pos_[s], {0.2f, 0.8f, 0.3f}, 1.0f);
+    }
+    gui_.setLighting(true);
+}
+
+void SatelliteRenderer::drawGroundTargets()
+{
+    if (gt_scene_pos_.empty()) return;
+    gui_.setLighting(false);
+    for (const auto& pos : gt_scene_pos_) {
+        gui_.drawSphere(pos, GT_MARKER_R, {1.0f, 0.55f, 0.05f});  // orange dot
+    }
+    gui_.setLighting(true);
+}
+
+void SatelliteRenderer::drawGroundLinks()
+{
+    if (gt_scene_pos_.empty() || interp_pos_.empty()) return;
+    const int n_sats    = static_cast<int>(interp_pos_.size());
+    const int n_targets = static_cast<int>(gt_scene_pos_.size());
+
+    gui_.setLighting(false);
+    for (int t = 0; t < n_targets; ++t) {
+        const glm::vec3& gnd     = gt_scene_pos_[t];
+        const glm::vec3  gnd_hat = glm::normalize(gnd);
+
+        for (int s = 0; s < n_sats; ++s) {
+            // Only draw link when satellite is in sunlight (can reflect)
+            if (s < static_cast<int>(interp_ecl_.size()) && interp_ecl_[s]) continue;
+
+            const glm::vec3 slant    = interp_pos_[s] - gnd;
+            const float     sin_elev = glm::dot(gnd_hat, glm::normalize(slant));
+            if (sin_elev >= min_elev_sin_) {
+                // Fade color by elevation: brighter = higher elevation
+                const float brightness = 0.4f + 0.6f * (sin_elev - min_elev_sin_)
+                                                       / (1.0f - min_elev_sin_);
+                gui_.drawLine(gnd, interp_pos_[s],
+                              {brightness, brightness * 0.85f, 0.1f}, 0.8f);
+            }
         }
     }
-
     gui_.setLighting(true);
 }
 
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
-void SatelliteRenderer::run() {
-    if (frames_.empty()) {
-        std::fprintf(stderr, "[Renderer] No frames captured — nothing to show.\n");
-        return;
-    }
-
-    while (!gui_.shouldClose()) {
+void SatelliteRenderer::run()
+{
+    while (!gui_.shouldClose())
+    {
         gui_.beginFrame();
 
         advancePlayback();
         handleInput();
+        buildInterpState();
         updateWindowTitle();
 
-        const auto& frame = frames_[pb_.frame_idx];
-        const glm::vec3 sun_dir{
-            static_cast<float>(frame.sun_dir_eci.x),
-            static_cast<float>(frame.sun_dir_eci.y),
-            static_cast<float>(frame.sun_dir_eci.z)
-        };
+        drawStarBackground();
+        drawEarth();
+        drawGroundTargets();
 
-        drawEarth(sun_dir);
-        drawSunIndicator(sun_dir);
-        drawTrails(pb_.frame_idx);
-        drawSatellites(pb_.frame_idx);
+        if (!interp_pos_.empty()) {
+            drawSunIndicator();
+            drawTrails();
+            drawSatellites();
+            drawGroundLinks();
+        }
 
         gui_.endFrame();
     }

@@ -9,6 +9,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <future>
 #include <string>
 #include <filesystem>
 #include <nlohmann/json.hpp>
@@ -110,24 +111,35 @@ int main(int argc, char* argv[]) {
 
 #ifdef CONSTELLATION_VIZ_ENABLED
         if (args.visualize) {
-            // Run simulation fully first, capturing every frame.
-            // Output is written before the window opens so the user can
-            // examine CSVs while the visualization is playing.
-            std::cout << "Running simulation (capturing frames for playback)...\n";
+            std::cout << "Starting simulation + live visualization (Space=pause, 1-4=speed)...\n";
 
+            auto queue = std::make_shared<FrameQueue>();
             SimulationEngine engine(cfg);
-            auto [cr, frames] = engine.runAndCapture(0);
+            engine.setFrameCallback([queue](const SimulationEngine::FrameData& f) {
+                queue->push(f);
+            });
 
+            // Run simulation on a background thread; window opens immediately.
+            std::future<ConstellationResult> sim_future =
+                std::async(std::launch::async, [&engine, queue]() {
+                    ConstellationResult cr = engine.run(0);
+                    queue->markSimDone();
+                    return cr;
+                });
+
+            {
+                Renderer renderer(queue, cfg.ground_targets,
+                                  cfg.metrics.coverage.min_elevation_deg);
+                renderer.run();
+            }
+
+            // Wait for simulation to finish (it's likely done already) then write output.
+            const ConstellationResult cr = sim_future.get();
             OutputManager output(cfg.output_directory, cfg.run_name);
-            output.writeRun(0, cr, engine.satelliteResults());
+            output.writeRun(0, cr, engine.satelliteResults(), engine.groundTargetResults());
             output.finalize();
 
-            std::cout << "Captured " << frames.size() << " frames.\n"
-                      << "Output: " << cfg.output_directory << "/" << cfg.run_name << "\n"
-                      << "\nOpening visualizer (Space=pause, 1-4=speed)...\n";
-
-            Renderer renderer(std::move(frames));
-            renderer.run();
+            std::cout << "Output: " << cfg.output_directory << "/" << cfg.run_name << "\n";
             return 0;
         }
 #endif
@@ -137,7 +149,7 @@ int main(int argc, char* argv[]) {
         ConstellationResult cr = engine.run(0);
 
         OutputManager output(cfg.output_directory, cfg.run_name);
-        output.writeRun(0, cr, engine.satelliteResults());
+        output.writeRun(0, cr, engine.satelliteResults(), engine.groundTargetResults());
         output.finalize();
 
         std::cout << "\nResults:\n"

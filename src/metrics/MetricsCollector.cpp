@@ -8,8 +8,16 @@
 MetricsCollector::MetricsCollector(const MetricsConfig& cfg, const SimConfig& sim_cfg)
     : cfg_(cfg), epoch_jd_(sim_cfg.epoch_jd)
 {
-    if (cfg_.coverage.enabled) {
+    if (cfg_.coverage.enabled)
         initGrid(cfg_.coverage.grid_resolution_deg);
+
+    for (const auto& gt : sim_cfg.ground_targets) {
+        GroundTargetAccum a;
+        a.name     = gt.name;
+        a.lat_deg  = gt.lat_deg;
+        a.lon_deg  = gt.lon_deg;
+        a.pos_ecef = EarthModel::geodeticToECEF(gt.lat_deg, gt.lon_deg, 0.0);
+        gt_accum_.push_back(std::move(a));
     }
 }
 
@@ -91,46 +99,77 @@ void MetricsCollector::updateSatMetrics(const std::vector<Satellite*>& sats, dou
 }
 
 void MetricsCollector::updateCoverage(const std::vector<Satellite*>& sats, double time_s) {
-    const double theta = EarthModel::gstAtTime(time_s);
+    const double theta   = EarthModel::gstAtTime(time_s);
     const double sin_min = std::sin(cfg_.coverage.min_elevation_deg * Constants::DEG2RAD);
+    const Vec3   sun_dir = SunModel::direction_eci(time_s, epoch_jd_);
+    const double dt_s    = cfg_.coverage.sample_interval_s;
 
+    // ---- global grid coverage ----
     int covered_count = 0;
-
     for (auto& gp : grid_points_) {
-        // Rotate ground point to ECI
         const Vec3 gp_eci = EarthModel::ecefToECI(gp.pos_ecef, theta);
         const Vec3 gp_hat = gp_eci.normalized();
 
         bool covered = false;
         for (const Satellite* sat : sats) {
-            const Vec3 slant  = sat->state().position - gp_eci;
-            const Vec3 sl_hat = slant.normalized();
-            if (gp_hat.dot(sl_hat) >= sin_min) {
-                covered = true;
-                break;
-            }
+            const Vec3 slant = sat->state().position - gp_eci;
+            if (gp_hat.dot(slant.normalized()) >= sin_min) { covered = true; break; }
         }
 
         if (covered) {
             ++covered_count;
             if (!gp.currently_covered && gp.last_coverage_time_s > -1e8) {
-                // Gap just ended — record revisit interval
                 const double gap = time_s - gp.last_coverage_time_s;
                 gp.revisit_sum_s += gap;
                 gp.max_revisit_s  = std::max(gp.max_revisit_s, gap);
                 ++gp.revisit_count;
             }
-            gp.coverage_time_s += cfg_.coverage.sample_interval_s;
+            gp.coverage_time_s += dt_s;
             gp.last_coverage_time_s = time_s;
         } else if (gp.currently_covered) {
-            // Coverage just lost — record start of gap
             gp.last_coverage_time_s = time_s;
         }
         gp.currently_covered = covered;
     }
+    if (!grid_points_.empty()) {
+        coverage_acc_ += static_cast<double>(covered_count) / grid_points_.size();
+        ++coverage_samples_;
+    }
 
-    coverage_acc_ += static_cast<double>(covered_count) / grid_points_.size();
-    ++coverage_samples_;
+    // ---- per-ground-target access ----
+    for (auto& a : gt_accum_) {
+        const Vec3 gt_eci = EarthModel::ecefToECI(a.pos_ecef, theta);
+        const Vec3 gt_hat = gt_eci.normalized();
+
+        double best_elev_deg   = -90.0;
+        bool   any_visible     = false;
+        bool   any_illuminated = false;
+
+        for (const Satellite* sat : sats) {
+            const Vec3   slant    = sat->state().position - gt_eci;
+            const double sin_elev = gt_hat.dot(slant.normalized());
+            if (sin_elev >= sin_min) {
+                any_visible = true;
+                const double elev_deg = std::asin(std::clamp(sin_elev, -1.0, 1.0))
+                                        * Constants::RAD2DEG;
+                if (elev_deg > best_elev_deg) best_elev_deg = elev_deg;
+                if (!EclipseModel::inEclipse(sat->state().position, sun_dir))
+                    any_illuminated = true;
+            }
+        }
+
+        if (any_visible) {
+            a.visible_s      += dt_s;
+            a.elev_sum_deg   += best_elev_deg;
+            a.max_elev_deg    = std::max(a.max_elev_deg, best_elev_deg);
+            ++a.visible_samples;
+            if (any_illuminated) a.illuminated_s += dt_s;
+            if (!a.in_pass) { a.in_pass = true; a.pass_start_s = time_s; ++a.pass_count; }
+        } else if (a.in_pass) {
+            a.pass_dur_sum_s += time_s - a.pass_start_s;
+            a.in_pass = false;
+        }
+    }
 }
 
 ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg) {
@@ -215,6 +254,30 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
         }
         cr.revisit_time_avg_s = (n_revisit > 0) ? revisit_sum / n_revisit : 0.0;
         cr.revisit_time_max_s = max_revisit;
+    }
+
+    // Ground target results
+    const double total_s = total_time_s_;
+    gt_results_.resize(gt_accum_.size());
+    for (size_t i = 0; i < gt_accum_.size(); ++i) {
+        auto& a = gt_accum_[i];
+        // Close any open pass
+        if (a.in_pass) { a.pass_dur_sum_s += total_s - a.pass_start_s; a.in_pass = false; }
+
+        auto& r = gt_results_[i];
+        r.name              = a.name;
+        r.lat_deg           = a.lat_deg;
+        r.lon_deg           = a.lon_deg;
+        r.coverage_time_s   = a.visible_s;
+        r.illuminated_time_s = a.illuminated_s;
+        r.visible_pct       = (total_s > 0) ? 100.0 * a.visible_s / total_s : 0.0;
+        r.illuminated_pct   = (total_s > 0) ? 100.0 * a.illuminated_s / total_s : 0.0;
+        r.avg_elevation_deg = (a.visible_samples > 0)
+                              ? a.elev_sum_deg / a.visible_samples : 0.0;
+        r.max_elevation_deg = a.max_elev_deg;
+        r.pass_count        = a.pass_count;
+        r.avg_pass_duration_s = (a.pass_count > 0)
+                                ? a.pass_dur_sum_s / a.pass_count : 0.0;
     }
 
     return cr;

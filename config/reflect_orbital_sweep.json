@@ -1,0 +1,76 @@
+{
+    "_comment": "Reflect Orbital Monte Carlo sweep — varies altitude, planes, and sats/plane to find optimal constellation design.",
+    "experiment": {
+        "name": "Reflect Orbital Parameter Sweep",
+        "sampling": "grid",
+        "threads": 0
+    },
+    "base_config": {
+        "simulation": {
+            "name": "Reflect Orbital Sweep",
+            "duration_days": 7,
+            "timestep_s": 60,
+            "epoch_jd": 2451545.0
+        },
+        "constellation": {
+            "type": "walker",
+            "altitude_km": 600,
+            "inclination_deg": 97.8,
+            "planes": 12,
+            "sats_per_plane": 6,
+            "phasing_factor": 1,
+            "eccentricity": 0.0,
+            "arg_of_perigee_deg": 0.0
+        },
+        "satellite": {
+            "mass_kg": 50,
+            "drag_coefficient": 2.2,
+            "drag_area_m2": 1.0,
+            "reflectivity": 1.8,
+            "srp_area_m2": 5.0
+        },
+        "forces": {
+            "gravity": true,
+            "j2": true,
+            "drag": true,
+            "srp": true,
+            "moon": false,
+            "sun_gravity": false
+        },
+        "metrics": {
+            "coverage": {
+                "enabled": true,
+                "grid_resolution_deg": 5,
+                "min_elevation_deg": 10,
+                "sample_interval_s": 300
+            },
+            "sunlight": true,
+            "drag": true,
+            "delta_v": true,
+            "revisit": true
+        },
+        "ground_targets": [
+            {"name": "Mojave Solar Farm",       "lat_deg": 35.0,  "lon_deg": -117.5},
+            {"name": "Atacama Solar Farm",      "lat_deg": -24.0, "lon_deg": -69.5},
+            {"name": "Sahara Solar Farm",       "lat_deg": 31.0,  "lon_deg": -7.5},
+            {"name": "Rajasthan Solar Farm",    "lat_deg": 26.9,  "lon_deg": 72.0},
+            {"name": "Gobi Solar Farm",         "lat_deg": 40.0,  "lon_deg": 101.0},
+            {"name": "Australian Outback Solar","lat_deg": -27.0, "lon_deg": 133.0},
+            {"name": "Saudi Arabia Solar Farm", "lat_deg": 24.0,  "lon_deg": 45.0},
+            {"name": "Spain Extremadura",       "lat_deg": 39.0,  "lon_deg": -6.0}
+        ],
+        "output": {
+            "directory": "output",
+            "run_name": "reflect_sweep"
+        }
+    },
+    "sweep": {
+        "altitude_km":    [450, 550, 650, 750],
+        "planes":         [6, 9, 12, 18],
+        "sats_per_plane": [4, 6, 8, 10]
+    },
+    "output": {
+        "directory": "output",
+        "experiment_name": "reflect_orbital_sweep"
+    }
+}

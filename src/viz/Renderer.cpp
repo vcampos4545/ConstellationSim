@@ -2,10 +2,14 @@
 
 #include "viz/Renderer.h"
 
-Renderer::Renderer(FrameVec frames, int width, int height)
-    : frames_(std::move(frames))
+Renderer::Renderer(std::shared_ptr<FrameQueue> queue,
+                   std::vector<GroundTarget>   ground_targets,
+                   double                      min_elevation_deg,
+                   int width, int height)
+    : queue_(std::move(queue))
 {
-    sat_renderer_ = std::make_unique<SatelliteRenderer>(frames_, width, height);
+    sat_renderer_ = std::make_unique<SatelliteRenderer>(
+        queue_, std::move(ground_targets), min_elevation_deg, width, height);
 }
 
 void Renderer::run() {

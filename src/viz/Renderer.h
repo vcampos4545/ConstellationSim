@@ -2,30 +2,28 @@
 
 #ifdef CONSTELLATION_VIZ_ENABLED
 
+#include "viz/FrameQueue.h"
 #include "viz/SatelliteRenderer.h"
-#include "core/SimulationEngine.h"
-#include <vector>
 #include <memory>
 
-// Owns the pre-captured frame vector and drives the SatelliteRenderer.
+// Owns the FrameQueue reference and drives the SatelliteRenderer.
 //
 // Flow:
-//   1. SimulationEngine::runAndCapture() produces the frame vector.
-//   2. main() moves the vector into Renderer.
-//   3. Renderer::run() opens the window and starts playback — blocks until closed.
+//   1. main() creates a FrameQueue and launches a background sim thread that pushes frames to it.
+//   2. main() constructs Renderer(queue) — window opens immediately.
+//   3. Renderer::run() streams and renders frames as they arrive — blocks until window is closed.
 class Renderer {
 public:
-    using FrameVec = std::vector<SimulationEngine::FrameData>;
-
-    explicit Renderer(FrameVec frames, int width = 1280, int height = 720);
+    explicit Renderer(std::shared_ptr<FrameQueue> queue,
+                      std::vector<GroundTarget>   ground_targets = {},
+                      double                      min_elevation_deg = 10.0,
+                      int width = 1280, int height = 720);
 
     // Blocks until the window is closed.
     void run();
 
-    int frameCount() const { return static_cast<int>(frames_.size()); }
-
 private:
-    FrameVec                           frames_;
+    std::shared_ptr<FrameQueue>        queue_;
     std::unique_ptr<SatelliteRenderer> sat_renderer_;
 };
 

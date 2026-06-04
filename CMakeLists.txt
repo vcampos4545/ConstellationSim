@@ -134,7 +134,7 @@ if(BUILD_VIZ)
 endif()
 
 # --------------------------------------------------------------------------
-# Copy config directories to build tree for convenience
+# Copy config directories and resources to build tree for convenience
 # --------------------------------------------------------------------------
 add_custom_command(TARGET ConstellationSim POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -143,5 +143,8 @@ add_custom_command(TARGET ConstellationSim POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_SOURCE_DIR}/montecarlo"
     "$<TARGET_FILE_DIR:ConstellationSim>/montecarlo"
-  COMMENT "Copying config files to build directory"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_SOURCE_DIR}/resources"
+    "$<TARGET_FILE_DIR:ConstellationSim>/resources"
+  COMMENT "Copying config files and resources to build directory"
 )

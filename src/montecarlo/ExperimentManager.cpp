@@ -17,7 +17,7 @@ ExperimentManager::ExperimentManager(const MCConfig& mc_cfg,
 void ExperimentManager::runOne(int run_id, const SimConfig& cfg) {
     SimulationEngine engine(cfg);
     ConstellationResult cr = engine.run(run_id);
-    output_.writeRun(run_id, cr, engine.satelliteResults());
+    output_.writeRun(run_id, cr, engine.satelliteResults(), engine.groundTargetResults());
 
     const int done = ++completed_;
     if (progress_cb_) (*progress_cb_)(done, total_runs_);

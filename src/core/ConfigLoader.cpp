@@ -92,6 +92,17 @@ SimConfig ConfigLoader::parseSimConfig(const json& j) {
     if (j.contains("forces"))        cfg.physics       = parsePhysics(j.at("forces"));
     if (j.contains("metrics"))       cfg.metrics       = parseMetrics(j.at("metrics"));
 
+    if (j.contains("ground_targets")) {
+        for (const auto& t : j.at("ground_targets")) {
+            GroundTarget gt;
+            gt.name        = getOrDefaultS(t, "name",        "");
+            gt.lat_deg     = getOrDefault(t,  "lat_deg",     0.0);
+            gt.lon_deg     = getOrDefault(t,  "lon_deg",     0.0);
+            gt.description = getOrDefaultS(t, "description", "");
+            cfg.ground_targets.push_back(std::move(gt));
+        }
+    }
+
     if (j.contains("output")) {
         const auto& o = j.at("output");
         cfg.output_directory = getOrDefaultS(o, "directory", cfg.output_directory);

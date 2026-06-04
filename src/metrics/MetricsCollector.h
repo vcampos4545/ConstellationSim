@@ -66,6 +66,28 @@ struct ConstellationResult {
 };
 
 // ---------------------------------------------------------------------------
+// Per-ground-target access statistics (one per target per simulation run)
+// ---------------------------------------------------------------------------
+struct GroundTargetResult {
+    std::string name;
+    double      lat_deg{0.0};
+    double      lon_deg{0.0};
+
+    // Access = satellite elevation above min_elevation_deg (regardless of eclipse)
+    double visible_pct{0.0};         // % sim time with ≥1 sat in view
+    double coverage_time_s{0.0};     // absolute visible time [s]
+
+    // Illumination = satellite in view AND in sunlight (can reflect)
+    double illuminated_pct{0.0};     // % sim time with ≥1 sunlit sat in view
+    double illuminated_time_s{0.0};  // absolute illuminated time [s]
+
+    double avg_elevation_deg{0.0};   // mean best-elevation during visible intervals
+    double max_elevation_deg{0.0};   // peak elevation seen [deg]
+    double avg_pass_duration_s{0.0}; // mean continuous pass duration [s]
+    int    pass_count{0};
+};
+
+// ---------------------------------------------------------------------------
 // MetricsCollector: updated each simulation timestep
 // ---------------------------------------------------------------------------
 class MetricsCollector {
@@ -78,7 +100,8 @@ public:
     // Called once at end of simulation to finalize all metrics.
     ConstellationResult finalize(int run_id, const SimConfig& cfg);
 
-    const std::vector<SatelliteResult>& satelliteResults() const { return sat_results_; }
+    const std::vector<SatelliteResult>&     satelliteResults()    const { return sat_results_; }
+    const std::vector<GroundTargetResult>&  groundTargetResults() const { return gt_results_; }
 
 private:
     MetricsConfig cfg_;
@@ -119,5 +142,26 @@ private:
     void updateCoverage(const std::vector<Satellite*>& sats, double time_s);
     void updateSatMetrics(const std::vector<Satellite*>& sats, double dt);
 
-    std::vector<SatelliteResult> sat_results_;
+    std::vector<SatelliteResult>    sat_results_;
+    std::vector<GroundTargetResult> gt_results_;
+
+    // Per-ground-target accumulation
+    struct GroundTargetAccum {
+        Vec3   pos_ecef;
+        double lat_deg{0.0};
+        double lon_deg{0.0};
+        std::string name;
+
+        double visible_s{0.0};
+        double illuminated_s{0.0};
+        double elev_sum_deg{0.0};
+        double max_elev_deg{0.0};
+        int    visible_samples{0};
+
+        bool   in_pass{false};
+        double pass_start_s{0.0};
+        double pass_dur_sum_s{0.0};
+        int    pass_count{0};
+    };
+    std::vector<GroundTargetAccum> gt_accum_;
 };

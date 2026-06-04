@@ -42,8 +42,9 @@ public:
     std::pair<ConstellationResult, std::vector<FrameData>>
     runAndCapture(int run_id = 0);
 
-    // Access satellite results after run().
-    const std::vector<SatelliteResult>& satelliteResults() const;
+    // Access results after run().
+    const std::vector<SatelliteResult>&    satelliteResults()    const;
+    const std::vector<GroundTargetResult>& groundTargetResults() const;
 
 private:
     SimConfig        cfg_;

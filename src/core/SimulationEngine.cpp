@@ -116,6 +116,10 @@ const std::vector<SatelliteResult>& SimulationEngine::satelliteResults() const {
     return metrics_.satelliteResults();
 }
 
+const std::vector<GroundTargetResult>& SimulationEngine::groundTargetResults() const {
+    return metrics_.groundTargetResults();
+}
+
 std::pair<ConstellationResult, std::vector<SimulationEngine::FrameData>>
 SimulationEngine::runAndCapture(int run_id) {
     std::vector<FrameData> frames;

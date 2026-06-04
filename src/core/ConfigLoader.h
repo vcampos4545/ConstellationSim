@@ -54,16 +54,26 @@ struct MetricsConfig {
     bool links     = false;
 };
 
+// A ground station / solar farm target for access analysis.
+struct GroundTarget {
+    std::string name;
+    double      lat_deg  = 0.0;
+    double      lon_deg  = 0.0;
+    std::string description;
+};
+
 struct SimConfig {
     std::string name          = "Unnamed Simulation";
     double duration_days      = 1.0;
     double timestep_s         = 60.0;
     double epoch_jd           = 2451545.0;  // J2000.0
 
-    WalkerConfig    constellation;
+    WalkerConfig       constellation;
     PhysicalProperties satellite;
-    PhysicsConfig   physics;
-    MetricsConfig   metrics;
+    PhysicsConfig      physics;
+    MetricsConfig      metrics;
+
+    std::vector<GroundTarget> ground_targets;
 
     std::string output_directory = "output";
     std::string run_name         = "run";

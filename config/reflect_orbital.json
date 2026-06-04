@@ -1,27 +1,27 @@
 {
-    "_comment": "Reflect Orbital concept: specular reflectors in sun-synchronous / optimized orbits",
+    "_comment": "Reflect Orbital — sun-synchronous reflector constellation targeting global solar farms.",
     "simulation": {
-        "name": "Reflect Orbital Concept",
-        "duration_days": 1,
-        "timestep_s": 60,
+        "name": "Reflect Orbital — SSO Base",
+        "duration_days": 7,
+        "timestep_s": 30,
         "epoch_jd": 2451545.0
     },
     "constellation": {
         "type": "walker",
-        "altitude_km": 450,
-        "inclination_deg": 97.0,
-        "total_satellites": 50,
-        "planes": 10,
-        "phasing_factor": 5,
+        "altitude_km": 600,
+        "inclination_deg": 97.8,
+        "total_satellites": 72,
+        "planes": 12,
+        "phasing_factor": 6,
         "eccentricity": 0.0,
         "arg_of_perigee_deg": 0.0
     },
     "satellite": {
-        "mass_kg": 5,
+        "mass_kg": 50,
         "drag_coefficient": 2.2,
-        "drag_area_m2": 3.0,
+        "drag_area_m2": 1.0,
         "reflectivity": 1.8,
-        "srp_area_m2": 3.0
+        "srp_area_m2": 5.0
     },
     "forces": {
         "gravity": true,
@@ -35,8 +35,8 @@
         "coverage": {
             "enabled": true,
             "grid_resolution_deg": 5,
-            "min_elevation_deg": 20,
-            "sample_interval_s": 300
+            "min_elevation_deg": 10,
+            "sample_interval_s": 120
         },
         "sunlight": true,
         "drag": true,
@@ -44,6 +44,56 @@
         "revisit": true,
         "links": false
     },
+    "ground_targets": [
+        {
+            "name": "Mojave Solar Farm",
+            "lat_deg": 35.0,
+            "lon_deg": -117.5,
+            "description": "Mojave Desert CA — 580 MW Ivanpah CSP complex"
+        },
+        {
+            "name": "Atacama Solar Farm",
+            "lat_deg": -24.0,
+            "lon_deg": -69.5,
+            "description": "Atacama Desert Chile — world highest solar irradiance region"
+        },
+        {
+            "name": "Sahara Solar Farm",
+            "lat_deg": 31.0,
+            "lon_deg": -7.5,
+            "description": "Ouarzazate Morocco — Noor concentrated solar complex"
+        },
+        {
+            "name": "Rajasthan Solar Farm",
+            "lat_deg": 26.9,
+            "lon_deg": 72.0,
+            "description": "Rajasthan India — Bhadla Solar Park 2.25 GW"
+        },
+        {
+            "name": "Gobi Solar Farm",
+            "lat_deg": 40.0,
+            "lon_deg": 101.0,
+            "description": "Gobi Desert Inner Mongolia — large-scale PV installations"
+        },
+        {
+            "name": "Australian Outback Solar",
+            "lat_deg": -27.0,
+            "lon_deg": 133.0,
+            "description": "Central Australia — proposed Sun Cable solar precinct"
+        },
+        {
+            "name": "Saudi Arabia Solar Farm",
+            "lat_deg": 24.0,
+            "lon_deg": 45.0,
+            "description": "Ar-Rub al-Khali Saudi Arabia — NEOM proposed 1.5 GW site"
+        },
+        {
+            "name": "Spain Extremadura",
+            "lat_deg": 39.0,
+            "lon_deg": -6.0,
+            "description": "Extremadura Spain — Europe largest solar deployment region"
+        }
+    ],
     "output": {
         "directory": "output",
         "run_name": "reflect_orbital"
