@@ -59,6 +59,7 @@ set(PHYSICS_SOURCES
   src/physics/ZonalHarmonics.cpp
   src/physics/AtmosphericDrag.cpp
   src/physics/SolarRadiationPressure.cpp
+  src/physics/ThirdBodyGravity.cpp
 )
 
 set(CONSTELLATION_SOURCES

@@ -4,6 +4,8 @@
 #include "physics/ZonalHarmonics.h"
 #include "physics/AtmosphericDrag.h"
 #include "physics/SolarRadiationPressure.h"
+#include "physics/ThirdBodyGravity.h"
+#include "environment/MoonModel.h"
 #include "environment/EclipseModel.h"
 #include "environment/SunModel.h"
 #include "orbit/OrbitalElements.h"
@@ -65,6 +67,14 @@ void SimulationEngine::buildPropagator() {
         auto s = std::make_unique<SolarRadiationPressure>(cfg_.epoch_jd, re);
         propagator_.addForceModel(std::move(s));
     }
+    if (phy.moon_gravity) {
+        propagator_.addForceModel(
+            std::make_unique<ThirdBodyGravity>(ThirdBodyType::Moon, cfg_.epoch_jd));
+    }
+    if (phy.sun_gravity) {
+        propagator_.addForceModel(
+            std::make_unique<ThirdBodyGravity>(ThirdBodyType::Sun, cfg_.epoch_jd));
+    }
 }
 
 void SimulationEngine::broadcastFrame(double time_s) {
@@ -72,7 +82,8 @@ void SimulationEngine::broadcastFrame(double time_s) {
 
     FrameData frame;
     frame.time_s      = time_s;
-    frame.sun_dir_eci = SunModel::direction_eci(time_s, cfg_.epoch_jd);
+    frame.sun_dir_eci  = SunModel::direction_eci(time_s, cfg_.epoch_jd);
+    frame.moon_dir_eci = MoonModel::direction_eci(time_s, cfg_.epoch_jd);
 
     const auto& sats = constellation_.satellites();
     frame.positions.reserve(sats.size());

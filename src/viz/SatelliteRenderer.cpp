@@ -223,6 +223,10 @@ void SatelliteRenderer::buildInterpState()
         static_cast<float>(lo_frame.sun_dir_eci.x),
         static_cast<float>(lo_frame.sun_dir_eci.y),
         static_cast<float>(lo_frame.sun_dir_eci.z)};
+    interp_moon_ = {
+        static_cast<float>(lo_frame.moon_dir_eci.x),
+        static_cast<float>(lo_frame.moon_dir_eci.y),
+        static_cast<float>(lo_frame.moon_dir_eci.z)};
 
     {
         const double gmst = EarthModel::gmst_rad(epoch_jd_ + pb_.sim_time_s / Constants::SEC_PER_DAY);
@@ -413,6 +417,14 @@ void SatelliteRenderer::drawSunIndicator()
     gui_.setLighting(false);
     const float len = EARTH_DISPLAY_R * 2.2f;
     gui_.drawArrow({0.0f, 0.0f, 0.0f}, interp_sun_ * len, {1.0f, 0.95f, 0.3f}, 1.5f);
+    gui_.setLighting(true);
+}
+
+void SatelliteRenderer::drawMoonIndicator()
+{
+    gui_.setLighting(false);
+    const float len = EARTH_DISPLAY_R * 1.8f;  // slightly shorter than sun arrow
+    gui_.drawArrow({0.0f, 0.0f, 0.0f}, interp_moon_ * len, {0.75f, 0.80f, 0.90f}, 1.5f);
     gui_.setLighting(true);
 }
 
@@ -1088,6 +1100,7 @@ void SatelliteRenderer::run()
         if (!interp_pos_.empty())
         {
             drawSunIndicator();
+            drawMoonIndicator();
             drawTrails();
             drawSatellites();
             drawGroundLinks();

@@ -26,6 +26,7 @@ public:
         std::vector<Vec3>   velocities;      // ECI [m/s]
         std::vector<bool>   in_eclipse;
         Vec3                sun_dir_eci;
+        Vec3                moon_dir_eci;
     };
 
     // Static per-satellite metadata (same every frame; populated in constructor).

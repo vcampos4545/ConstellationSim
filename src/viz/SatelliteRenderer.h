@@ -96,6 +96,7 @@ private:
     std::vector<Vec3>      interp_vel_eci_;   // ECI velocities [m/s] — for telemetry
     std::vector<bool>      interp_ecl_;
     glm::vec3              interp_sun_{1.0f, 0.0f, 0.0f};
+    glm::vec3              interp_moon_{0.0f, 1.0f, 0.0f};
     int                    lo_frame_idx_{-1};
 
     // Trail ring-buffer per satellite
@@ -137,6 +138,7 @@ private:
     void drawStarBackground();
     void drawEarth();
     void drawSunIndicator();
+    void drawMoonIndicator();
     void drawSatellites();
     void drawTrails();
     void drawGroundTargets();
