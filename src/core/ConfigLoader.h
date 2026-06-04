@@ -145,6 +145,8 @@ public:
                                const std::string& name,
                                double value);
 
+    static double epochStringToJD(const std::string& epoch_str);
+
 private:
     static SimConfig parseSimConfig(const nlohmann::json& j);
     static WalkerConfig  parseWalker(const nlohmann::json& j);

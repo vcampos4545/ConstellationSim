@@ -4,7 +4,7 @@
         "name": "Reflect Orbital — SSO Base",
         "duration_days": 7,
         "timestep_s": 30,
-        "epoch_jd": 2451545.0
+        "epoch": "2000-01-01T12:00:00"
     },
     "constellation": {
         "type": "walker",

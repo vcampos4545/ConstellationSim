@@ -102,7 +102,7 @@ void MetricsCollector::updateSatMetrics(const std::vector<Satellite*>& sats, dou
 }
 
 void MetricsCollector::updateCoverage(const std::vector<Satellite*>& sats, double time_s) {
-    const double theta   = EarthModel::gstAtTime(time_s);
+    const double theta   = EarthModel::gstAtTime(time_s, epoch_jd_);
     const double sin_min = std::sin(cfg_.coverage.min_elevation_deg * Constants::DEG2RAD);
     const Vec3   sun_dir = SunModel::direction_eci(time_s, epoch_jd_);
     const double dt_s    = cfg_.coverage.sample_interval_s;

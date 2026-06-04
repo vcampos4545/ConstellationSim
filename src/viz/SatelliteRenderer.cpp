@@ -23,13 +23,15 @@ SatelliteRenderer::SatelliteRenderer(std::shared_ptr<FrameQueue> queue,
                                      std::vector<GroundTarget> ground_targets,
                                      double min_elevation_deg,
                                      std::vector<SimulationEngine::SatelliteInfo> sat_info,
+                                     double epoch_jd,
                                      int window_w, int window_h)
     : queue_(std::move(queue)),
       sat_info_(std::move(sat_info)),
       gui_(window_w, window_h, "ConstellationSim"),
       orbital_cam_(3.5f, 25.0f, -20.0f, glm::vec3(0.0f)),
       min_elev_sin_(static_cast<float>(std::sin(min_elevation_deg * Constants::DEG2RAD))),
-      min_elevation_rad_(min_elevation_deg * Constants::DEG2RAD)
+      min_elevation_rad_(min_elevation_deg * Constants::DEG2RAD),
+      epoch_jd_(epoch_jd)
 {
     gui_.camera
         .setFOV(45.0f)
@@ -222,12 +224,14 @@ void SatelliteRenderer::buildInterpState()
         static_cast<float>(lo_frame.sun_dir_eci.y),
         static_cast<float>(lo_frame.sun_dir_eci.z)};
 
-    gt_scene_pos_.resize(ground_targets_.size());
-    for (size_t i = 0; i < ground_targets_.size(); ++i)
     {
-        // Earth is rendered without rotation; pin ground targets at GST=0.
-        const Vec3 eci = EarthModel::ecefToECI(ground_targets_[i].pos_ecef, 0.0);
-        gt_scene_pos_[i] = eciToScene(eci);
+        const double gmst = EarthModel::gmst_rad(epoch_jd_ + pb_.sim_time_s / Constants::SEC_PER_DAY);
+        gt_scene_pos_.resize(ground_targets_.size());
+        for (size_t i = 0; i < ground_targets_.size(); ++i)
+        {
+            const Vec3 eci = EarthModel::ecefToECI(ground_targets_[i].pos_ecef, gmst);
+            gt_scene_pos_[i] = eciToScene(eci);
+        }
     }
 }
 
@@ -385,11 +389,17 @@ void SatelliteRenderer::drawEarth()
     // at -X (u=0.5 maps to theta=π). Combined with stbi's vertical flip,
     // Earth's north pole renders at -Y and prime meridian at -X.
     // Fix: 180° rotation around (0,1,-1)/√2 sends -Y→+Z and -X→+X.
+    // EARTH_BASE_ROT: fixes mesh orientation so north pole→+Z, prime meridian→+X at GMST=0.
+    // Sidereal rotation: spin around +Z by current GMST so Greenwich tracks the real Earth.
     static const glm::quat EARTH_BASE_ROT =
         glm::angleAxis(glm::pi<float>(), glm::normalize(glm::vec3(0.0f, 1.0f, -1.0f)));
+    const float gmst_f = static_cast<float>(
+        EarthModel::gmst_rad(epoch_jd_ + pb_.sim_time_s / Constants::SEC_PER_DAY));
+    const glm::quat sidereal_rot = glm::angleAxis(gmst_f, glm::vec3(0.0f, 0.0f, 1.0f));
 
     gui_.setLightDirection(interp_sun_);
-    gui_.drawTexturedSphere({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R, EARTH_BASE_ROT, earth_tex_);
+    gui_.drawTexturedSphere({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R,
+                            sidereal_rot * EARTH_BASE_ROT, earth_tex_);
 
     gui_.setLighting(false);
     gui_.drawCircle({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R * 1.002f,
@@ -601,7 +611,7 @@ void SatelliteRenderer::drawMercatorWindow()
 
     const int idx = selected_sat_idx_;
     const Vec3 &eci = interp_pos_eci_[idx];
-    const double gst = Constants::EARTH_OMEGA_RAD_S * pb_.sim_time_s;
+    const double gst = EarthModel::gmst_rad(epoch_jd_ + pb_.sim_time_s / Constants::SEC_PER_DAY);
     const double cx = std::cos(gst), sx = std::sin(gst);
 
     // ECI → ECEF
@@ -836,8 +846,8 @@ void SatelliteRenderer::drawTelemetryPanel()
     const double cov_radius_km = R_km * rho;
     const double cov_area_km2 = Constants::TWO_PI * R_km * R_km * (1.0 - std::cos(rho));
 
-    // ECI → ECEF (rotate about Z by GST)
-    const double gst = Constants::EARTH_OMEGA_RAD_S * pb_.sim_time_s;
+    // ECI → ECEF (rotate about Z by GMST)
+    const double gst = EarthModel::gmst_rad(epoch_jd_ + pb_.sim_time_s / Constants::SEC_PER_DAY);
     const double cx = std::cos(gst), sx = std::sin(gst);
     const double ecef_x = pos.x * cx + pos.y * sx;
     const double ecef_y = -pos.x * sx + pos.y * cx;

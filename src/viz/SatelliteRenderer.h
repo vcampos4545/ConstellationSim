@@ -5,6 +5,7 @@
 #include "viz/FrameQueue.h"
 #include "core/ConfigLoader.h"
 #include "core/SimulationEngine.h"
+#include "core/math/Constants.h"
 #include "core/math/Vec3.h"
 #include <vgl/vgl.h>
 #include <vgl/OrbitalCamera.h>
@@ -44,6 +45,7 @@ public:
                       std::vector<GroundTarget>                      ground_targets = {},
                       double                                         min_elevation_deg = 10.0,
                       std::vector<SimulationEngine::SatelliteInfo>   sat_info = {},
+                      double                                         epoch_jd = Constants::J2000_JD,
                       int window_w = 1280, int window_h = 720);
 
     ~SatelliteRenderer();
@@ -118,6 +120,7 @@ private:
     std::vector<GroundTargetViz> ground_targets_;
     float                        min_elev_sin_{0.0f};
     double                       min_elevation_rad_{0.0};
+    double                       epoch_jd_{Constants::J2000_JD};
     std::vector<glm::vec3>       gt_scene_pos_;
 
     static constexpr float GT_MARKER_R = 0.018f;

@@ -30,10 +30,22 @@ namespace EarthModel {
         };
     }
 
-    // Earth rotation angle at time t [s] since simulation epoch.
-    // theta_0 is the GST at epoch [rad].
-    inline double gstAtTime(double t_s, double theta_0_rad = 0.0) {
-        return theta_0_rad + Constants::EARTH_OMEGA_RAD_S * t_s;
+    // Greenwich Mean Sidereal Time [rad] for Julian Date jd.
+    // IAU 1982 formula (Vallado, Alg 15). Accurate to ~0.1 arcsec.
+    inline double gmst_rad(double jd) {
+        const double T = (jd - Constants::J2000_JD) / 36525.0;
+        double theta = 280.46061837
+                     + 360.98564736629 * (jd - Constants::J2000_JD)
+                     + 0.000387933     * T * T
+                     - T * T * T / 38710000.0;
+        theta = std::fmod(theta, 360.0);
+        if (theta < 0.0) theta += 360.0;
+        return theta * Constants::DEG2RAD;
+    }
+
+    // Earth rotation angle [rad] at t_s seconds after epoch_jd.
+    inline double gstAtTime(double t_s, double epoch_jd = Constants::J2000_JD) {
+        return gmst_rad(epoch_jd + t_s / Constants::SEC_PER_DAY);
     }
 
     // Atmospheric co-rotation velocity at position r [ECI, m]: v = omega x r

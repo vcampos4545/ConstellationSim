@@ -1,6 +1,10 @@
 #include "core/ConfigLoader.h"
 #include <fstream>
 #include <stdexcept>
+#include <chrono>
+#include <ctime>
+#include <sstream>
+#include <cctype>
 
 using json = nlohmann::json;
 
@@ -15,6 +19,56 @@ static bool getOrDefaultB(const json& j, const std::string& key, bool def) {
 }
 static std::string getOrDefaultS(const json& j, const std::string& key, const std::string& def) {
     return j.contains(key) ? j.at(key).get<std::string>() : def;
+}
+
+// Convert calendar date/time to Julian Date (Meeus Ch. 7).
+static double calendarToJD(int year, int month, int day,
+                            int hour = 0, int minute = 0, double second = 0.0) {
+    if (month <= 2) { year -= 1; month += 12; }
+    int A = year / 100;
+    int B = 2 - A + A / 4;
+    double day_frac = day + (hour + minute / 60.0 + second / 3600.0) / 24.0;
+    return std::floor(365.25  * (year  + 4716))
+         + std::floor(30.6001 * (month + 1))
+         + day_frac + B - 1524.5;
+}
+
+double ConfigLoader::epochStringToJD(const std::string& str) {
+    std::string up(str);
+    for (auto& c : up) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+
+    if (up == "J2000" || up == "J2000.0") return 2451545.0;
+
+    if (up == "TODAY" || up == "NOW") {
+        auto now = std::chrono::system_clock::now();
+        std::time_t t = std::chrono::system_clock::to_time_t(now);
+        struct tm utc{};
+#ifdef _WIN32
+        gmtime_s(&utc, &t);
+#else
+        gmtime_r(&t, &utc);
+#endif
+        return calendarToJD(utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+                            utc.tm_hour, utc.tm_min, utc.tm_sec);
+    }
+
+    // ISO 8601: "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD HH:MM:SS"
+    try {
+        int year = 0, month = 0, day = 0, hour = 0, minute = 0;
+        double second = 0.0;
+        char sep = 0;
+        std::istringstream ss(str);
+        if (!(ss >> year >> sep >> month >> sep >> day))
+            throw std::runtime_error("bad date");
+        char peek = static_cast<char>(ss.peek());
+        if (peek == 'T' || peek == ' ') {
+            ss >> sep >> hour >> sep >> minute >> sep >> second;
+        }
+        return calendarToJD(year, month, day, hour, minute, second);
+    } catch (...) {
+        throw std::runtime_error("Cannot parse epoch string: '" + str + "'. "
+            "Use ISO 8601 (e.g. \"2025-01-01T00:00:00\"), \"J2000\", or \"today\".");
+    }
 }
 
 WalkerConfig ConfigLoader::parseWalker(const json& j) {
@@ -87,7 +141,12 @@ SimConfig ConfigLoader::parseSimConfig(const json& j) {
         cfg.name          = getOrDefaultS(s, "name",         cfg.name);
         cfg.duration_days = getOrDefault(s,  "duration_days", cfg.duration_days);
         cfg.timestep_s    = getOrDefault(s,  "timestep_s",    cfg.timestep_s);
-        cfg.epoch_jd      = getOrDefault(s,  "epoch_jd",      cfg.epoch_jd);
+        if (s.contains("epoch")) {
+            cfg.epoch_jd = ConfigLoader::epochStringToJD(
+                s.at("epoch").get<std::string>());
+        } else {
+            cfg.epoch_jd = getOrDefault(s, "epoch_jd", cfg.epoch_jd);
+        }
     }
     if (j.contains("constellation")) {
         const auto& cj = j.at("constellation");

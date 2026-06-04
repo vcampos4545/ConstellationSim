@@ -134,7 +134,7 @@ int main(int argc, char* argv[]) {
             {
                 Renderer renderer(queue, cfg.ground_targets,
                                   cfg.metrics.coverage.min_elevation_deg,
-                                  std::move(sat_info));
+                                  std::move(sat_info), cfg.epoch_jd);
                 renderer.run();
             }
 
