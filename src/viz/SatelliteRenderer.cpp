@@ -28,7 +28,7 @@ SatelliteRenderer::SatelliteRenderer(std::shared_ptr<FrameQueue> queue,
     : queue_(std::move(queue)),
       sat_info_(std::move(sat_info)),
       gui_(window_w, window_h, "ConstellationSim"),
-      orbital_cam_(3.5f, 25.0f, -20.0f, glm::vec3(0.0f)),
+      orbital_cam_(3.5f, 25.0f, 20.0f, glm::vec3(0.0f)),
       min_elev_sin_(static_cast<float>(std::sin(min_elevation_deg * Constants::DEG2RAD))),
       min_elevation_rad_(min_elevation_deg * Constants::DEG2RAD),
       epoch_jd_(epoch_jd)
@@ -384,7 +384,21 @@ void SatelliteRenderer::handleInput()
 // ---------------------------------------------------------------------------
 void SatelliteRenderer::drawStarBackground()
 {
-    gui_.drawBackground(star_tex_);
+    // Equirectangular celestial texture in equatorial coordinates (RA/Dec).
+    // VGL sphere mesh + stbi flip places the north celestial pole content at
+    // mesh -Y and RA=0h (vernal equinox) at mesh +X.
+    // R_x(-90°) maps -Y → +Z and keeps +X → +X, aligning NCP with ECI +Z
+    // and the vernal equinox with ECI +X.
+    static const glm::quat STAR_BASE_ROT =
+        glm::angleAxis(-glm::half_pi<float>(), glm::vec3(1.0f, 0.0f, 0.0f));
+
+    // Center the sphere on the camera so stars track the view with no parallax.
+    // Disable depth writes so the background never occludes scene objects.
+    glDepthMask(GL_FALSE);
+    gui_.setLighting(false);
+    gui_.drawTexturedSphere(gui_.camera.position, 100.0f, STAR_BASE_ROT, star_tex_);
+    gui_.setLighting(true);
+    glDepthMask(GL_TRUE);
 }
 
 void SatelliteRenderer::drawEarth()
@@ -423,7 +437,7 @@ void SatelliteRenderer::drawSunIndicator()
 void SatelliteRenderer::drawMoonIndicator()
 {
     gui_.setLighting(false);
-    const float len = EARTH_DISPLAY_R * 1.8f;  // slightly shorter than sun arrow
+    const float len = EARTH_DISPLAY_R * 1.8f; // slightly shorter than sun arrow
     gui_.drawArrow({0.0f, 0.0f, 0.0f}, interp_moon_ * len, {0.75f, 0.80f, 0.90f}, 1.5f);
     gui_.setLighting(true);
 }
