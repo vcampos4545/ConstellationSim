@@ -5,6 +5,7 @@
 #include "physics/SolarRadiationPressure.h"
 #include "environment/EclipseModel.h"
 #include "environment/SunModel.h"
+#include "orbit/OrbitalElements.h"
 #include "core/math/Constants.h"
 #include <iostream>
 #include <iomanip>
@@ -79,6 +80,26 @@ void SimulationEngine::broadcastFrame(double time_s) {
     (*frame_cb_)(frame);
 }
 
+void SimulationEngine::sampleTrajectory(double time_s) {
+    const double mu = Constants::GM_EARTH;
+    const auto& sats = constellation_.satellites();
+    for (int i = 0; i < static_cast<int>(sats.size()); ++i) {
+        const OrbitalElements elems =
+            OrbitalElements::fromStateVector(sats[i]->state(), mu);
+        OrbitalSnapshot snap;
+        snap.time_s          = time_s;
+        snap.sat_id          = i;
+        snap.sma_km          = elems.sma / 1000.0;
+        snap.eccentricity    = elems.ecc;
+        snap.inclination_deg = elems.inc  * Constants::RAD2DEG;
+        snap.raan_deg        = elems.raan * Constants::RAD2DEG;
+        snap.aop_deg         = elems.aop  * Constants::RAD2DEG;
+        snap.true_anomaly_deg = elems.ta  * Constants::RAD2DEG;
+        snap.altitude_km     = (elems.sma / 1000.0) - Constants::EARTH_RADIUS_KM;
+        traj_snapshots_.push_back(snap);
+    }
+}
+
 ConstellationResult SimulationEngine::run(int run_id) {
     const double dt     = cfg_.timestep_s;
     const double t_end  = cfg_.duration_s();
@@ -95,6 +116,17 @@ ConstellationResult SimulationEngine::run(int run_id) {
                   << cfg_.duration_days << " days\n";
     }
 
+    const bool do_traj = (cfg_.trajectory_sample_interval_s > 0.0);
+    if (do_traj) {
+        traj_snapshots_.clear();
+        traj_snapshots_.reserve(
+            static_cast<std::size_t>(t_end / cfg_.trajectory_sample_interval_s + 2)
+            * sats.size());
+        traj_next_sample_s_ = 0.0;
+        sampleTrajectory(0.0);
+        traj_next_sample_s_ = cfg_.trajectory_sample_interval_s;
+    }
+
     metrics_.update(sats, 0.0);
     broadcastFrame(0.0);
 
@@ -104,6 +136,11 @@ ConstellationResult SimulationEngine::run(int run_id) {
         }
         metrics_.update(sats, t + dt);
         broadcastFrame(t + dt);
+
+        if (do_traj && (t + dt) >= traj_next_sample_s_) {
+            sampleTrajectory(t + dt);
+            traj_next_sample_s_ += cfg_.trajectory_sample_interval_s;
+        }
 
         if (t + dt >= next_report) {
             next_report += report_interval;

@@ -140,8 +140,9 @@ SimConfig ConfigLoader::parseSimConfig(const json& j) {
 
     if (j.contains("output")) {
         const auto& o = j.at("output");
-        cfg.output_directory = getOrDefaultS(o, "directory", cfg.output_directory);
-        cfg.run_name         = getOrDefaultS(o, "run_name",  cfg.run_name);
+        cfg.output_directory              = getOrDefaultS(o, "directory",  cfg.output_directory);
+        cfg.run_name                      = getOrDefaultS(o, "run_name",   cfg.run_name);
+        cfg.trajectory_sample_interval_s  = getOrDefault(o,  "trajectory_sample_interval_s", 0.0);
     }
     return cfg;
 }

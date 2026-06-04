@@ -35,6 +35,19 @@ public:
         int seat_id{0};
     };
 
+    // Time-series snapshot of Keplerian elements for one satellite at one instant.
+    struct OrbitalSnapshot {
+        double time_s{0};
+        int    sat_id{0};
+        double sma_km{0};
+        double eccentricity{0};
+        double inclination_deg{0};
+        double raan_deg{0};
+        double aop_deg{0};
+        double true_anomaly_deg{0};
+        double altitude_km{0};
+    };
+
     using FrameCallback = std::function<void(const FrameData&)>;
 
     explicit SimulationEngine(const SimConfig& cfg);
@@ -54,6 +67,7 @@ public:
     const std::vector<SatelliteResult>&    satelliteResults()    const;
     const std::vector<GroundTargetResult>& groundTargetResults() const;
     const std::vector<SatelliteInfo>&      satelliteInfo()       const;
+    const std::vector<OrbitalSnapshot>&    trajectorySnapshots() const { return traj_snapshots_; }
 
 private:
     SimConfig        cfg_;
@@ -62,8 +76,11 @@ private:
     MetricsCollector metrics_;
 
     std::optional<FrameCallback> frame_cb_;
-    std::vector<SatelliteInfo>   sat_info_;   // populated in constructor
+    std::vector<SatelliteInfo>   sat_info_;        // populated in constructor
+    std::vector<OrbitalSnapshot> traj_snapshots_;  // populated during run() if enabled
+    double                       traj_next_sample_s_{0.0};
 
     void buildPropagator();
     void broadcastFrame(double time_s);
+    void sampleTrajectory(double time_s);
 };

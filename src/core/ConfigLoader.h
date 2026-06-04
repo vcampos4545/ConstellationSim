@@ -96,6 +96,10 @@ struct SimConfig {
     std::string output_directory = "output";
     std::string run_name         = "run";
 
+    // If > 0, orbital elements (RAAN, inclination, etc.) are snapshotted at this
+    // interval and written to trajectory.csv. Set to 0 to disable.
+    double trajectory_sample_interval_s = 0.0;
+
     double duration_s() const { return duration_days * 86400.0; }
 };
 

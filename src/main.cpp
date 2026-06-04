@@ -142,6 +142,8 @@ int main(int argc, char* argv[]) {
             const ConstellationResult cr = sim_future.get();
             OutputManager output(cfg.output_directory, cfg.run_name);
             output.writeRun(0, cr, engine.satelliteResults(), engine.groundTargetResults());
+            if (!engine.trajectorySnapshots().empty())
+                output.writeTrajectory(0, engine.trajectorySnapshots());
             output.finalize();
 
             std::cout << "Output: " << cfg.output_directory << "/" << cfg.run_name << "\n";
@@ -155,6 +157,8 @@ int main(int argc, char* argv[]) {
 
         OutputManager output(cfg.output_directory, cfg.run_name);
         output.writeRun(0, cr, engine.satelliteResults(), engine.groundTargetResults());
+        if (!engine.trajectorySnapshots().empty())
+            output.writeTrajectory(0, engine.trajectorySnapshots());
         output.finalize();
 
         std::cout << "\nResults:\n"

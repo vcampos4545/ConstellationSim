@@ -131,6 +131,23 @@ void OutputManager::writeGroundTargetCsv(const std::string& path,
     }
 }
 
+void OutputManager::writeTrajectory(
+    int run_id,
+    const std::vector<SimulationEngine::OrbitalSnapshot>& snapshots)
+{
+    if (snapshots.empty()) return;
+    const std::string path = runDir(run_id) + "/trajectory.csv";
+    CsvWriter w(path);
+    w.writeHeader({"time_s","sat_id","sma_km","eccentricity",
+                   "inclination_deg","raan_deg","aop_deg",
+                   "true_anomaly_deg","altitude_km"});
+    for (const auto& s : snapshots) {
+        w.writeRowV(s.time_s, s.sat_id, s.sma_km, s.eccentricity,
+                    s.inclination_deg, s.raan_deg, s.aop_deg,
+                    s.true_anomaly_deg, s.altitude_km);
+    }
+}
+
 void OutputManager::finalize() {
     std::lock_guard lock(mutex_);
     summary_writer_->flush();

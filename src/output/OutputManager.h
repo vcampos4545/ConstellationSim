@@ -1,6 +1,7 @@
 #pragma once
 
 #include "metrics/MetricsCollector.h"
+#include "core/SimulationEngine.h"
 #include "output/CsvWriter.h"
 #include <string>
 #include <filesystem>
@@ -26,6 +27,10 @@ public:
                   const ConstellationResult& cr,
                   const std::vector<SatelliteResult>& sat_results,
                   const std::vector<GroundTargetResult>& gt_results = {});
+
+    // Write orbital element trajectory snapshots (RAAN, inclination, etc.) to CSV.
+    void writeTrajectory(int run_id,
+                         const std::vector<SimulationEngine::OrbitalSnapshot>& snapshots);
 
     // Finalize: flush the experiment summary CSV.
     void finalize();

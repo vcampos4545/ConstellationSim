@@ -158,9 +158,11 @@ if(BUILD_VIZ)
 endif()
 
 # --------------------------------------------------------------------------
-# Copy config directories and resources to build tree for convenience
+# Copy config directories and resources to build tree for convenience.
+# Uses add_custom_target(ALL) so the copy runs on every build, not only
+# when C++ sources change (POST_BUILD would skip it for JSON-only edits).
 # --------------------------------------------------------------------------
-add_custom_command(TARGET ConstellationSim POST_BUILD
+add_custom_target(copy_assets ALL
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_SOURCE_DIR}/config"
     "$<TARGET_FILE_DIR:ConstellationSim>/config"
@@ -170,5 +172,6 @@ add_custom_command(TARGET ConstellationSim POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${CMAKE_SOURCE_DIR}/resources"
     "$<TARGET_FILE_DIR:ConstellationSim>/resources"
-  COMMENT "Copying config files and resources to build directory"
+  COMMENT "Syncing config files and resources to build directory"
+  DEPENDS ConstellationSim
 )
