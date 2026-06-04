@@ -22,11 +22,12 @@ SimulationEngine::SimulationEngine(const SimConfig& cfg)
 {
     buildPropagator();
 
-    // Apply the satellite physical properties from config to all satellites.
+    // Apply the satellite physical properties from config to all satellites,
+    // and record static per-satellite metadata for the renderer.
     for (auto* sat : constellation_.satellites()) {
         sat->state();  // ensure state is initialized
-        // Set properties (Constellation::createWalker uses defaults; override here)
         const_cast<PhysicalProperties&>(sat->properties()) = cfg.satellite;
+        sat_info_.push_back({sat->id(), sat->planeId(), sat->seatId()});
     }
 }
 
@@ -58,15 +59,17 @@ void SimulationEngine::broadcastFrame(double time_s) {
     if (!frame_cb_) return;
 
     FrameData frame;
-    frame.time_s     = time_s;
+    frame.time_s      = time_s;
     frame.sun_dir_eci = SunModel::direction_eci(time_s, cfg_.epoch_jd);
 
     const auto& sats = constellation_.satellites();
     frame.positions.reserve(sats.size());
+    frame.velocities.reserve(sats.size());
     frame.in_eclipse.reserve(sats.size());
 
     for (const auto* sat : sats) {
         frame.positions.push_back(sat->state().position);
+        frame.velocities.push_back(sat->state().velocity);
         frame.in_eclipse.push_back(
             EclipseModel::inEclipse(sat->state().position, frame.sun_dir_eci));
     }
@@ -118,6 +121,10 @@ const std::vector<SatelliteResult>& SimulationEngine::satelliteResults() const {
 
 const std::vector<GroundTargetResult>& SimulationEngine::groundTargetResults() const {
     return metrics_.groundTargetResults();
+}
+
+const std::vector<SimulationEngine::SatelliteInfo>& SimulationEngine::satelliteInfo() const {
+    return sat_info_;
 }
 
 std::pair<ConstellationResult, std::vector<SimulationEngine::FrameData>>

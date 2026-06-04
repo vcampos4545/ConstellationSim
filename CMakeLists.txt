@@ -125,11 +125,35 @@ if(BUILD_VIZ)
     FetchContent_MakeAvailable(vgl)
   endif()
 
+  # Dear ImGui — GLFW + OpenGL3 backend
+  FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.91.6
+  )
+  FetchContent_MakeAvailable(imgui)
+
+  add_library(imgui_lib STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+  )
+  target_include_directories(imgui_lib PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+  )
+  # Tell imgui_impl_opengl3 to use the GLEW loader (VGL already calls glewInit()).
+  target_compile_definitions(imgui_lib PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
+  target_link_libraries(imgui_lib PUBLIC vgl)
+
   target_sources(constellation_core PRIVATE
     src/viz/Renderer.cpp
     src/viz/SatelliteRenderer.cpp
   )
-  target_link_libraries(constellation_core PUBLIC vgl)
+  target_link_libraries(constellation_core PUBLIC vgl imgui_lib)
   target_compile_definitions(constellation_core PUBLIC CONSTELLATION_VIZ_ENABLED)
 endif()
 

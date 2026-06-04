@@ -22,9 +22,17 @@ public:
     // Per-frame state snapshot pushed to the renderer when viz is enabled.
     struct FrameData {
         double              time_s;
-        std::vector<Vec3>   positions;       // ECI positions [m]
+        std::vector<Vec3>   positions;       // ECI [m]
+        std::vector<Vec3>   velocities;      // ECI [m/s]
         std::vector<bool>   in_eclipse;
         Vec3                sun_dir_eci;
+    };
+
+    // Static per-satellite metadata (same every frame; populated in constructor).
+    struct SatelliteInfo {
+        int id{0};
+        int plane_id{0};
+        int seat_id{0};
     };
 
     using FrameCallback = std::function<void(const FrameData&)>;
@@ -45,6 +53,7 @@ public:
     // Access results after run().
     const std::vector<SatelliteResult>&    satelliteResults()    const;
     const std::vector<GroundTargetResult>& groundTargetResults() const;
+    const std::vector<SatelliteInfo>&      satelliteInfo()       const;
 
 private:
     SimConfig        cfg_;
@@ -53,6 +62,7 @@ private:
     MetricsCollector metrics_;
 
     std::optional<FrameCallback> frame_cb_;
+    std::vector<SatelliteInfo>   sat_info_;   // populated in constructor
 
     void buildPropagator();
     void broadcastFrame(double time_s);

@@ -4,19 +4,21 @@
 
 #include "viz/FrameQueue.h"
 #include "viz/SatelliteRenderer.h"
+#include "core/SimulationEngine.h"
 #include <memory>
 
 // Owns the FrameQueue reference and drives the SatelliteRenderer.
 //
 // Flow:
-//   1. main() creates a FrameQueue and launches a background sim thread that pushes frames to it.
-//   2. main() constructs Renderer(queue) — window opens immediately.
-//   3. Renderer::run() streams and renders frames as they arrive — blocks until window is closed.
+//   1. main() creates a FrameQueue, captures engine.satelliteInfo(), launches background sim.
+//   2. main() constructs Renderer — window opens immediately.
+//   3. Renderer::run() streams and renders frames as they arrive — blocks until closed.
 class Renderer {
 public:
-    explicit Renderer(std::shared_ptr<FrameQueue> queue,
-                      std::vector<GroundTarget>   ground_targets = {},
-                      double                      min_elevation_deg = 10.0,
+    explicit Renderer(std::shared_ptr<FrameQueue>               queue,
+                      std::vector<GroundTarget>                 ground_targets = {},
+                      double                                    min_elevation_deg = 10.0,
+                      std::vector<SimulationEngine::SatelliteInfo> sat_info = {},
                       int width = 1280, int height = 720);
 
     // Blocks until the window is closed.

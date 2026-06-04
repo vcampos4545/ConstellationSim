@@ -115,6 +115,10 @@ int main(int argc, char* argv[]) {
 
             auto queue = std::make_shared<FrameQueue>();
             SimulationEngine engine(cfg);
+
+            // Capture static satellite metadata before launching the sim thread.
+            auto sat_info = engine.satelliteInfo();
+
             engine.setFrameCallback([queue](const SimulationEngine::FrameData& f) {
                 queue->push(f);
             });
@@ -129,7 +133,8 @@ int main(int argc, char* argv[]) {
 
             {
                 Renderer renderer(queue, cfg.ground_targets,
-                                  cfg.metrics.coverage.min_elevation_deg);
+                                  cfg.metrics.coverage.min_elevation_deg,
+                                  std::move(sat_info));
                 renderer.run();
             }
 
