@@ -86,8 +86,6 @@ private:
     Texture earth_tex_;
     Texture star_tex_;
 
-    static constexpr double EARTH_ROT_RATE = 7.2921159e-5;  // rad/s
-
     // ---------------------------------------------------------------------------
     // Per-render-tick interpolated state
     // ---------------------------------------------------------------------------
