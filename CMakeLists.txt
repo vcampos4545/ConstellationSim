@@ -56,6 +56,7 @@ set(ENVIRONMENT_SOURCES
 set(PHYSICS_SOURCES
   src/physics/Gravity.cpp
   src/physics/J2Perturbation.cpp
+  src/physics/ZonalHarmonics.cpp
   src/physics/AtmosphericDrag.cpp
   src/physics/SolarRadiationPressure.cpp
 )

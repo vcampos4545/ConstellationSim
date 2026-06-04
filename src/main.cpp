@@ -159,6 +159,8 @@ int main(int argc, char* argv[]) {
         output.writeRun(0, cr, engine.satelliteResults(), engine.groundTargetResults());
         if (!engine.trajectorySnapshots().empty())
             output.writeTrajectory(0, engine.trajectorySnapshots());
+        if (!engine.passEvents().empty())
+            output.writePassEvents(0, engine.passEvents());
         output.finalize();
 
         std::cout << "\nResults:\n"

@@ -114,6 +114,7 @@ void SatelliteRenderer::advancePlayback()
         if (queue_->isSimDone()) {
             pb_.sim_time_s = std::fmod(pb_.sim_time_s, max_t);
             trail_buf_.clear();
+            ground_track_.clear();
             lo_frame_idx_ = -1;
         } else {
             pb_.sim_time_s = max_t;
@@ -529,6 +530,162 @@ void SatelliteRenderer::drawCoverageFootprint()
 }
 
 // ---------------------------------------------------------------------------
+// 2D Mercator ground track window
+// ---------------------------------------------------------------------------
+
+void SatelliteRenderer::drawMercatorWindow()
+{
+    if (selected_sat_idx_ < 0 || selected_sat_idx_ >= (int)interp_pos_eci_.size()) {
+        ground_track_.clear();
+        return;
+    }
+
+    const int   idx  = selected_sat_idx_;
+    const Vec3& eci  = interp_pos_eci_[idx];
+    const double gst = Constants::EARTH_OMEGA_RAD_S * pb_.sim_time_s;
+    const double cx  = std::cos(gst), sx = std::sin(gst);
+
+    // ECI → ECEF
+    const double ex =  eci.x*cx + eci.y*sx;
+    const double ey = -eci.x*sx + eci.y*cx;
+    const double ez =  eci.z;
+    const double rr = eci.norm();
+
+    const float cur_lat = static_cast<float>(std::asin(std::clamp(ez/rr,-1.0,1.0)) * Constants::RAD2DEG);
+    const float cur_lon = static_cast<float>(std::atan2(ey, ex) * Constants::RAD2DEG);
+
+    // Append to trail; clear if simulation looped (playback went backwards)
+    if (!ground_track_.empty()) {
+        const float prev_time_wrapped = ground_track_.back().first;   // re-use first slot as sentinel
+        (void)prev_time_wrapped;
+    }
+    ground_track_.push_back({cur_lat, cur_lon});
+    if ((int)ground_track_.size() > GROUND_TRACK_MAX)
+        ground_track_.pop_front();
+
+    // --- ImGui window ---
+    ImGui::SetNextWindowSize({600.0f, 320.0f}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowBgAlpha(0.95f);
+    bool open = true;
+    if (!ImGui::Begin("Ground Track", &open,
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        ImGui::End();
+        if (!open) selected_sat_idx_ = -1;
+        return;
+    }
+    if (!open) { ImGui::End(); selected_sat_idx_ = -1; return; }
+
+    const ImVec2 canvas_pos  = ImGui::GetCursorScreenPos();
+    const ImVec2 canvas_size = ImGui::GetContentRegionAvail();
+
+    // Earth texture background (equirectangular)
+    ImGui::Image(static_cast<ImTextureID>(static_cast<uintptr_t>(earth_tex_.id())),
+                 canvas_size);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Coordinate helper: (lat, lon) in degrees → screen pixel
+    auto toScreen = [&](float lat, float lon) -> ImVec2 {
+        return {
+            canvas_pos.x + (lon + 180.0f) / 360.0f * canvas_size.x,
+            canvas_pos.y + (90.0f - lat)  / 180.0f * canvas_size.y
+        };
+    };
+
+    // --- Ground track trail ---
+    const int  n_trail = static_cast<int>(ground_track_.size());
+    for (int i = 1; i < n_trail; ++i) {
+        const float  lon0 = ground_track_[i-1].second;
+        const float  lon1 = ground_track_[i].second;
+        // Skip segments that cross the ±180° antimeridian
+        if (std::abs(lon1 - lon0) > 90.0f) continue;
+
+        const float alpha = static_cast<float>(i) / n_trail;
+        const ImU32 col   = IM_COL32(
+            static_cast<int>(20  + 20*alpha),
+            static_cast<int>(120 + 135*alpha),
+            static_cast<int>(220 - 20*alpha), 220);
+        dl->AddLine(toScreen(ground_track_[i-1].first, lon0),
+                    toScreen(ground_track_[i].first,   lon1),
+                    col, 1.5f);
+    }
+
+    // --- Coverage swath circle ---
+    {
+        const double R_m  = Constants::EARTH_RADIUS_M;
+        const double eps  = min_elevation_rad_;
+        const double eta  = std::asin(std::clamp(R_m * std::cos(eps) / rr, 0.0, 1.0));
+        const double rho  = Constants::PI / 2.0 - eps - eta;
+
+        if (rho > 0.0) {
+            // Sub-satellite unit vector in ECI
+            const Vec3   sub_eci = eci * (1.0 / rr);
+
+            // Build orthonormal basis in ECI perpendicular to sub_eci
+            const Vec3 ref = (std::abs(sub_eci.z) > 0.99)
+                ? Vec3{1,0,0} : Vec3{0,0,1};
+            const Vec3 t1 = sub_eci.cross(ref).normalized();
+            const Vec3 t2 = sub_eci.cross(t1);
+
+            const double cr = std::cos(rho), sr = std::sin(rho);
+            constexpr int N = 72;
+            ImVec2 prev_pt{};
+            float  prev_slon = 0.0f;
+            bool   has_prev  = false;
+
+            for (int i = 0; i <= N; ++i) {
+                const double theta = Constants::TWO_PI * i / N;
+                // 3D point on the coverage circle (ECI unit vector)
+                const Vec3 pt_eci = sub_eci * cr
+                                  + t1 * (std::cos(theta) * sr)
+                                  + t2 * (std::sin(theta) * sr);
+
+                // ECI → ECEF
+                const double px_e = pt_eci.x*cx + pt_eci.y*sx;
+                const double py_e = -pt_eci.x*sx + pt_eci.y*cx;
+                const double pz_e = pt_eci.z;
+                const float slat = static_cast<float>(
+                    std::asin(std::clamp(pz_e, -1.0, 1.0)) * Constants::RAD2DEG);
+                const float slon = static_cast<float>(
+                    std::atan2(py_e, px_e) * Constants::RAD2DEG);
+
+                const ImVec2 sp = toScreen(slat, slon);
+                if (has_prev && std::abs(slon - prev_slon) < 90.0f) {
+                    dl->AddLine(prev_pt, sp, IM_COL32(0, 210, 255, 160), 1.2f);
+                }
+                prev_pt   = sp;
+                prev_slon = slon;
+                has_prev  = true;
+            }
+        }
+    }
+
+    // --- Current sub-satellite point ---
+    const ImVec2 sat_px = toScreen(cur_lat, cur_lon);
+    dl->AddCircleFilled(sat_px, 5.5f, IM_COL32(0, 220, 255, 255));
+    dl->AddCircle(sat_px, 7.5f, IM_COL32(255, 255, 255, 200), 16, 1.2f);
+
+    // Satellite label
+    char label[32];
+    if (idx < (int)sat_info_.size())
+        std::snprintf(label, sizeof(label), " SAT-%03d", sat_info_[idx].id);
+    else
+        std::snprintf(label, sizeof(label), " SAT-%03d", idx);
+    dl->AddText({sat_px.x + 8.0f, sat_px.y - 6.0f},
+                IM_COL32(255, 255, 255, 230), label);
+
+    // Sub-satellite lat/lon readout
+    char coord_buf[64];
+    std::snprintf(coord_buf, sizeof(coord_buf), "%.2f\xc2\xb0 %s  %.2f\xc2\xb0 %s",
+                  std::abs(cur_lat), cur_lat >= 0 ? "N" : "S",
+                  std::abs(cur_lon), cur_lon >= 0 ? "E" : "W");
+    dl->AddText({canvas_pos.x + 4.0f, canvas_pos.y + canvas_size.y - 16.0f},
+                IM_COL32(220, 220, 220, 220), coord_buf);
+
+    ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
 // ImGui overlays
 // ---------------------------------------------------------------------------
 
@@ -742,6 +899,7 @@ void SatelliteRenderer::run()
         // --- ImGui overlays (rendered on top of the 3D scene) ---
         drawHUD();
         drawTelemetryPanel();
+        drawMercatorWindow();
 
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

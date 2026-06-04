@@ -131,6 +131,32 @@ void OutputManager::writeGroundTargetCsv(const std::string& path,
     }
 }
 
+void OutputManager::writePassEvents(int run_id, const std::vector<PassEvent>& events)
+{
+    if (events.empty()) return;
+    const std::string path = runDir(run_id) + "/pass_events.csv";
+    CsvWriter w(path);
+    w.writeHeader({"target","sat_id",
+                   "aos_s","los_s","duration_s","max_elev_deg",
+                   "aos_day","aos_hh","aos_mm","aos_ss",
+                   "los_day","los_hh","los_mm","los_ss"});
+    for (const auto& e : events) {
+        auto decompose = [](double t_s, int& day, int& hh, int& mm, int& ss) {
+            day = static_cast<int>(t_s / 86400.0);
+            hh  = static_cast<int>(std::fmod(t_s, 86400.0) / 3600.0);
+            mm  = static_cast<int>(std::fmod(t_s, 3600.0)  / 60.0);
+            ss  = static_cast<int>(std::fmod(t_s, 60.0));
+        };
+        int ad, ah, am, as_, ld, lh, lm, ls;
+        decompose(e.aos_s, ad, ah, am, as_);
+        decompose(e.los_s, ld, lh, lm, ls);
+        w.writeRowV(e.target_name, e.sat_id,
+                    e.aos_s, e.los_s, e.duration_s, e.max_elev_deg,
+                    ad, ah, am, as_,
+                    ld, lh, lm, ls);
+    }
+}
+
 void OutputManager::writeTrajectory(
     int run_id,
     const std::vector<SimulationEngine::OrbitalSnapshot>& snapshots)

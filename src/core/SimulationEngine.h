@@ -68,6 +68,7 @@ public:
     const std::vector<GroundTargetResult>& groundTargetResults() const;
     const std::vector<SatelliteInfo>&      satelliteInfo()       const;
     const std::vector<OrbitalSnapshot>&    trajectorySnapshots() const { return traj_snapshots_; }
+    const std::vector<PassEvent>&          passEvents()          const { return metrics_.passEvents(); }
 
 private:
     SimConfig        cfg_;

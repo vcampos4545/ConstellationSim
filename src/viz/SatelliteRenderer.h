@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 #include <deque>
+#include <utility>
 
 // Streams and renders live simulation frames from a FrameQueue.
 //
@@ -99,6 +100,15 @@ private:
 
     // Trail ring-buffer per satellite
     std::vector<std::deque<glm::vec3>> trail_buf_;
+
+    // ---------------------------------------------------------------------------
+    // 2D Mercator ground track
+    // ---------------------------------------------------------------------------
+    // lat/lon history (degrees) for the selected satellite
+    std::deque<std::pair<float, float>> ground_track_;
+    static constexpr int GROUND_TRACK_MAX = 2000;
+
+    void drawMercatorWindow();
 
     // ---------------------------------------------------------------------------
     // Ground targets

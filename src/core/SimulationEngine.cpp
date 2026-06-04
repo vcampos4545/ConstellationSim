@@ -1,6 +1,7 @@
 #include "core/SimulationEngine.h"
 #include "physics/Gravity.h"
 #include "physics/J2Perturbation.h"
+#include "physics/ZonalHarmonics.h"
 #include "physics/AtmosphericDrag.h"
 #include "physics/SolarRadiationPressure.h"
 #include "environment/EclipseModel.h"
@@ -45,8 +46,16 @@ void SimulationEngine::buildPropagator() {
         propagator_.addForceModel(std::move(g));
     }
     if (phy.j2) {
-        auto j = std::make_unique<J2Perturbation>(mu, j2, re);
-        propagator_.addForceModel(std::move(j));
+        if (phy.j3 || phy.j4) {
+            // Use the combined model when higher-order terms are enabled
+            auto zh = std::make_unique<ZonalHarmonics>(mu, re, j2,
+                phy.j3 ? Constants::J3 : 0.0,
+                phy.j4 ? Constants::J4 : 0.0);
+            propagator_.addForceModel(std::move(zh));
+        } else {
+            auto j = std::make_unique<J2Perturbation>(mu, j2, re);
+            propagator_.addForceModel(std::move(j));
+        }
     }
     if (phy.drag) {
         auto d = std::make_unique<AtmosphericDrag>(re);

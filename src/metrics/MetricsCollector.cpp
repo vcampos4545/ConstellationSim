@@ -38,6 +38,9 @@ void MetricsCollector::update(const std::vector<Satellite*>& sats, double time_s
     if (sat_accum_.empty() && !sats.empty()) {
         num_satellites_ = static_cast<int>(sats.size());
         sat_accum_.resize(num_satellites_);
+        // Initialise per-satellite pass state for every ground target
+        for (auto& a : gt_accum_)
+            a.sat_passes.resize(num_satellites_);
     }
 
     const double dt = (update_count_ == 0) ? 0.0 : time_s - total_time_s_;
@@ -145,16 +148,41 @@ void MetricsCollector::updateCoverage(const std::vector<Satellite*>& sats, doubl
         bool   any_visible     = false;
         bool   any_illuminated = false;
 
-        for (const Satellite* sat : sats) {
-            const Vec3   slant    = sat->state().position - gt_eci;
-            const double sin_elev = gt_hat.dot(slant.normalized());
-            if (sin_elev >= sin_min) {
+        for (int si = 0; si < static_cast<int>(sats.size()); ++si) {
+            const Satellite* sat    = sats[si];
+            const Vec3   slant      = sat->state().position - gt_eci;
+            const double sin_elev   = gt_hat.dot(slant.normalized());
+            const double elev_deg   = std::asin(std::clamp(sin_elev, -1.0, 1.0))
+                                      * Constants::RAD2DEG;
+            const bool visible      = (sin_elev >= sin_min);
+
+            if (visible) {
                 any_visible = true;
-                const double elev_deg = std::asin(std::clamp(sin_elev, -1.0, 1.0))
-                                        * Constants::RAD2DEG;
                 if (elev_deg > best_elev_deg) best_elev_deg = elev_deg;
                 if (!EclipseModel::inEclipse(sat->state().position, sun_dir))
                     any_illuminated = true;
+            }
+
+            // Per-satellite AOS/LOS tracking
+            if (!a.sat_passes.empty()) {
+                auto& sp = a.sat_passes[si];
+                if (visible && !sp.in_pass) {
+                    sp.in_pass       = true;
+                    sp.aos_s         = time_s;
+                    sp.max_elev_deg  = elev_deg;
+                } else if (visible && sp.in_pass) {
+                    sp.max_elev_deg  = std::max(sp.max_elev_deg, elev_deg);
+                } else if (!visible && sp.in_pass) {
+                    sp.in_pass = false;
+                    PassEvent ev;
+                    ev.target_name  = a.name;
+                    ev.sat_id       = si;
+                    ev.aos_s        = sp.aos_s;
+                    ev.los_s        = time_s;
+                    ev.duration_s   = time_s - sp.aos_s;
+                    ev.max_elev_deg = sp.max_elev_deg;
+                    pass_events_.push_back(ev);
+                }
             }
         }
 
@@ -262,8 +290,23 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
     gt_results_.resize(gt_accum_.size());
     for (size_t i = 0; i < gt_accum_.size(); ++i) {
         auto& a = gt_accum_[i];
-        // Close any open pass
+        // Close any open aggregate pass
         if (a.in_pass) { a.pass_dur_sum_s += total_s - a.pass_start_s; a.in_pass = false; }
+        // Close any open per-satellite passes
+        for (int si = 0; si < static_cast<int>(a.sat_passes.size()); ++si) {
+            auto& sp = a.sat_passes[si];
+            if (sp.in_pass) {
+                sp.in_pass = false;
+                PassEvent ev;
+                ev.target_name  = a.name;
+                ev.sat_id       = si;
+                ev.aos_s        = sp.aos_s;
+                ev.los_s        = total_s;
+                ev.duration_s   = total_s - sp.aos_s;
+                ev.max_elev_deg = sp.max_elev_deg;
+                pass_events_.push_back(ev);
+            }
+        }
 
         auto& r = gt_results_[i];
         r.name              = a.name;

@@ -14,7 +14,9 @@ inline constexpr double RAD2DEG = 180.0 / PI;
 inline constexpr double EARTH_RADIUS_M      = 6'378'137.0;          // [m]
 inline constexpr double EARTH_RADIUS_KM     = 6378.137;             // [km]
 inline constexpr double GM_EARTH            = 3.986004418e14;        // [m^3/s^2]
-inline constexpr double J2                  = 1.08262668e-3;         // [-]
+inline constexpr double J2                  =  1.08262668e-3;        // EGM2008 [-]
+inline constexpr double J3                  = -2.53265649e-6;        // EGM2008 [-]
+inline constexpr double J4                  = -1.61962160e-6;        // EGM2008 [-]
 inline constexpr double EARTH_OMEGA_RAD_S   = 7.2921150e-5;          // [rad/s]
 inline constexpr double EARTH_FLATTENING    = 1.0 / 298.257223563;   // [-]
 

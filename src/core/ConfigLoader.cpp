@@ -49,6 +49,8 @@ PhysicsConfig ConfigLoader::parsePhysics(const json& j) {
     PhysicsConfig p;
     p.gravity      = getOrDefaultB(j, "gravity",      p.gravity);
     p.j2           = getOrDefaultB(j, "j2",           p.j2);
+    p.j3           = getOrDefaultB(j, "j3",           p.j3);
+    p.j4           = getOrDefaultB(j, "j4",           p.j4);
     p.drag         = getOrDefaultB(j, "drag",         p.drag);
     p.srp          = getOrDefaultB(j, "srp",          p.srp);
     p.moon_gravity = getOrDefaultB(j, "moon",         p.moon_gravity);

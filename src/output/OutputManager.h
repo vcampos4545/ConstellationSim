@@ -32,6 +32,10 @@ public:
     void writeTrajectory(int run_id,
                          const std::vector<SimulationEngine::OrbitalSnapshot>& snapshots);
 
+    // Write per-pass AOS/LOS table to CSV. Only written when ground targets are configured.
+    void writePassEvents(int run_id,
+                         const std::vector<PassEvent>& events);
+
     // Finalize: flush the experiment summary CSV.
     void finalize();
 

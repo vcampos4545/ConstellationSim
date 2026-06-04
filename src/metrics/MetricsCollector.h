@@ -88,6 +88,18 @@ struct GroundTargetResult {
 };
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Per-pass record: one AOS→LOS event for a (ground-target, satellite) pair.
+// ---------------------------------------------------------------------------
+struct PassEvent {
+    std::string target_name;
+    int         sat_id{0};
+    double      aos_s{0.0};      // Acquisition of Signal [s since epoch]
+    double      los_s{0.0};      // Loss of Signal [s since epoch]
+    double      duration_s{0.0}; // LOS − AOS
+    double      max_elev_deg{0.0};
+};
+
 // MetricsCollector: updated each simulation timestep
 // ---------------------------------------------------------------------------
 class MetricsCollector {
@@ -102,6 +114,7 @@ public:
 
     const std::vector<SatelliteResult>&     satelliteResults()    const { return sat_results_; }
     const std::vector<GroundTargetResult>&  groundTargetResults() const { return gt_results_; }
+    const std::vector<PassEvent>&           passEvents()          const { return pass_events_; }
 
 private:
     MetricsConfig cfg_;
@@ -162,6 +175,16 @@ private:
         double pass_start_s{0.0};
         double pass_dur_sum_s{0.0};
         int    pass_count{0};
+
+        // Per-satellite pass state (index = sat index in constellation).
+        // Populated on first update when num_satellites_ is known.
+        struct SatPassState {
+            bool   in_pass{false};
+            double aos_s{0.0};
+            double max_elev_deg{-90.0};
+        };
+        std::vector<SatPassState> sat_passes;
     };
     std::vector<GroundTargetAccum> gt_accum_;
+    std::vector<PassEvent>         pass_events_;
 };

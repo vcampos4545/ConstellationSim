@@ -20,10 +20,12 @@ struct PhysicalProperties {
 };
 
 struct PhysicsConfig {
-    bool gravity     = true;
-    bool j2          = true;
-    bool drag        = true;
-    bool srp         = true;
+    bool gravity      = true;
+    bool j2           = true;
+    bool j3           = false;  // J3 zonal harmonic (pear-shape)
+    bool j4           = false;  // J4 zonal harmonic
+    bool drag         = true;
+    bool srp          = true;
     bool moon_gravity = false;
     bool sun_gravity  = false;
 };
