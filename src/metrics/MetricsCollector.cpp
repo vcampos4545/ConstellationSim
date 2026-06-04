@@ -227,7 +227,8 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
     cr.inclination_deg = cfg.constellation.inclination_deg;
     cr.total_satellites = cfg.constellation.total_satellites;
     cr.planes           = cfg.constellation.planes;
-    cr.sats_per_plane   = cfg.constellation.total_satellites / cfg.constellation.planes;
+    cr.sats_per_plane   = (cfg.constellation.planes > 0)
+                        ? cfg.constellation.total_satellites / cfg.constellation.planes : 0;
 
     if (num_satellites_ > 0) {
         cr.avg_sunlit_pct = fleet_sunlit  / num_satellites_;

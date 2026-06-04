@@ -20,6 +20,9 @@ public:
     // Generate a Walker Delta constellation from config.
     static Constellation createWalker(const WalkerConfig& cfg, int start_id = 0);
 
+    // Build a fully custom constellation from explicit per-satellite Keplerian specs.
+    static Constellation createCustom(const std::vector<SatelliteSpec>& specs);
+
     const std::vector<Plane>&     planes()     const { return planes_; }
     const std::vector<Satellite*>& satellites() const { return sat_ptrs_; }
 

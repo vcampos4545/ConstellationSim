@@ -17,7 +17,9 @@ static std::mutex g_console_mutex;
 
 SimulationEngine::SimulationEngine(const SimConfig& cfg)
     : cfg_(cfg),
-      constellation_(Constellation::createWalker(cfg.constellation)),
+      constellation_(cfg.constellation_type == "custom"
+                     ? Constellation::createCustom(cfg.explicit_satellites)
+                     : Constellation::createWalker(cfg.constellation)),
       metrics_(cfg.metrics, cfg)
 {
     buildPropagator();

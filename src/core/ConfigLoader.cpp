@@ -87,7 +87,42 @@ SimConfig ConfigLoader::parseSimConfig(const json& j) {
         cfg.timestep_s    = getOrDefault(s,  "timestep_s",    cfg.timestep_s);
         cfg.epoch_jd      = getOrDefault(s,  "epoch_jd",      cfg.epoch_jd);
     }
-    if (j.contains("constellation")) cfg.constellation = parseWalker(j.at("constellation"));
+    if (j.contains("constellation")) {
+        const auto& cj = j.at("constellation");
+        cfg.constellation_type = getOrDefaultS(cj, "type", "walker");
+
+        if (cfg.constellation_type == "custom") {
+            if (cj.contains("satellites")) {
+                for (const auto& sj : cj.at("satellites")) {
+                    SatelliteSpec s;
+                    s.plane_id           = getOrDefaultI(sj, "plane",              0);
+                    s.seat_id            = getOrDefaultI(sj, "seat",               0);
+                    s.sma_km             = getOrDefault(sj,  "sma_km",             7000.0);
+                    s.eccentricity       = getOrDefault(sj,  "eccentricity",       0.0);
+                    s.inclination_deg    = getOrDefault(sj,  "inclination_deg",    0.0);
+                    s.raan_deg           = getOrDefault(sj,  "raan_deg",           0.0);
+                    s.arg_of_perigee_deg = getOrDefault(sj,  "arg_of_perigee_deg", 0.0);
+                    s.true_anomaly_deg   = getOrDefault(sj,  "true_anomaly_deg",   0.0);
+                    cfg.explicit_satellites.push_back(s);
+                }
+            }
+            // Populate WalkerConfig metadata fields so MetricsCollector output is meaningful.
+            cfg.constellation.total_satellites = static_cast<int>(cfg.explicit_satellites.size());
+            int max_plane = 0;
+            for (const auto& s : cfg.explicit_satellites)
+                if (s.plane_id > max_plane) max_plane = s.plane_id;
+            cfg.constellation.planes         = max_plane + 1;
+            if (!cfg.explicit_satellites.empty()) {
+                cfg.constellation.inclination_deg = cfg.explicit_satellites[0].inclination_deg;
+                cfg.constellation.altitude_km     = cfg.explicit_satellites[0].sma_km - 6378.137;
+                cfg.constellation.eccentricity    = cfg.explicit_satellites[0].eccentricity;
+                cfg.constellation.arg_of_perigee_deg =
+                    cfg.explicit_satellites[0].arg_of_perigee_deg;
+            }
+        } else {
+            cfg.constellation = parseWalker(cj);
+        }
+    }
     if (j.contains("satellite"))     cfg.satellite     = parseSatellite(j.at("satellite"));
     if (j.contains("forces"))        cfg.physics       = parsePhysics(j.at("forces"));
     if (j.contains("metrics"))       cfg.metrics       = parseMetrics(j.at("metrics"));

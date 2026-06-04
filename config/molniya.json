@@ -1,0 +1,85 @@
+{
+  "simulation": {
+    "name": "Molniya-3 HEO Constellation",
+    "duration_days": 2.0,
+    "timestep_s": 30.0,
+    "epoch_jd": 2451545.0
+  },
+
+  "constellation": {
+    "type": "custom",
+    "satellites": [
+      {
+        "plane": 0,
+        "seat": 0,
+        "sma_km": 26562.0,
+        "eccentricity": 0.7411,
+        "inclination_deg": 63.435,
+        "raan_deg": 0.0,
+        "arg_of_perigee_deg": 270.0,
+        "true_anomaly_deg": 0.0
+      },
+      {
+        "plane": 1,
+        "seat": 0,
+        "sma_km": 26562.0,
+        "eccentricity": 0.7411,
+        "inclination_deg": 63.435,
+        "raan_deg": 120.0,
+        "arg_of_perigee_deg": 270.0,
+        "true_anomaly_deg": 120.0
+      },
+      {
+        "plane": 2,
+        "seat": 0,
+        "sma_km": 26562.0,
+        "eccentricity": 0.7411,
+        "inclination_deg": 63.435,
+        "raan_deg": 240.0,
+        "arg_of_perigee_deg": 270.0,
+        "true_anomaly_deg": 240.0
+      }
+    ]
+  },
+
+  "satellite": {
+    "mass_kg": 1500.0,
+    "drag_coefficient": 2.2,
+    "drag_area_m2": 5.0,
+    "reflectivity": 1.5,
+    "srp_area_m2": 5.0
+  },
+
+  "forces": {
+    "gravity": true,
+    "j2": true,
+    "drag": true,
+    "srp": true
+  },
+
+  "metrics": {
+    "coverage": {
+      "enabled": true,
+      "min_elevation_deg": 5.0,
+      "grid_resolution_deg": 5.0,
+      "sample_interval_s": 300.0
+    },
+    "sunlight": true,
+    "drag": true,
+    "delta_v": true,
+    "revisit": true
+  },
+
+  "ground_targets": [
+    { "name": "Moscow",       "lat_deg":  55.75,  "lon_deg":  37.62 },
+    { "name": "Murmansk",     "lat_deg":  68.97,  "lon_deg":  33.09 },
+    { "name": "Novosibirsk",  "lat_deg":  55.01,  "lon_deg":  82.93 },
+    { "name": "Anchorage",    "lat_deg":  61.22,  "lon_deg": -149.89 },
+    { "name": "Alert",        "lat_deg":  82.50,  "lon_deg":  -62.34 }
+  ],
+
+  "output": {
+    "directory": "output",
+    "run_name": "molniya"
+  }
+}

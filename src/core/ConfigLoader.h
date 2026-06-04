@@ -38,6 +38,19 @@ struct WalkerConfig {
     double arg_of_perigee_deg = 0.0;
 };
 
+// Per-satellite Keplerian specification for fully-custom constellations
+// (used when constellation.type == "custom" in the JSON).
+struct SatelliteSpec {
+    int    plane_id{0};
+    int    seat_id{0};
+    double sma_km{7000.0};
+    double eccentricity{0.0};
+    double inclination_deg{0.0};
+    double raan_deg{0.0};
+    double arg_of_perigee_deg{0.0};
+    double true_anomaly_deg{0.0};
+};
+
 struct CoverageConfig {
     bool   enabled             = true;
     double grid_resolution_deg = 5.0;  // latitude/longitude grid spacing
@@ -68,7 +81,12 @@ struct SimConfig {
     double timestep_s         = 60.0;
     double epoch_jd           = 2451545.0;  // J2000.0
 
-    WalkerConfig       constellation;
+    // "walker"  → use constellation (WalkerConfig) to generate satellites
+    // "custom"  → use explicit_satellites (vector<SatelliteSpec>) directly
+    std::string                constellation_type{"walker"};
+    WalkerConfig               constellation;
+    std::vector<SatelliteSpec> explicit_satellites;
+
     PhysicalProperties satellite;
     PhysicsConfig      physics;
     MetricsConfig      metrics;
