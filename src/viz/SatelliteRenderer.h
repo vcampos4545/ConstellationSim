@@ -109,6 +109,7 @@ private:
     };
     std::vector<GroundTargetViz> ground_targets_;
     float                        min_elev_sin_{0.0f};
+    double                       min_elevation_rad_{0.0};
     std::vector<glm::vec3>       gt_scene_pos_;
 
     static constexpr float GT_MARKER_R = 0.018f;
@@ -129,6 +130,7 @@ private:
     void drawTrails();
     void drawGroundTargets();
     void drawGroundLinks();
+    void drawCoverageFootprint();   // ring on Earth surface for selected satellite
 
     // ImGui overlays
     void drawHUD();

@@ -28,7 +28,8 @@ SatelliteRenderer::SatelliteRenderer(std::shared_ptr<FrameQueue>                
       sat_info_(std::move(sat_info)),
       gui_(window_w, window_h, "ConstellationSim"),
       orbital_cam_(3.5f, 25.0f, -20.0f, glm::vec3(0.0f)),
-      min_elev_sin_(static_cast<float>(std::sin(min_elevation_deg * Constants::DEG2RAD)))
+      min_elev_sin_(static_cast<float>(std::sin(min_elevation_deg * Constants::DEG2RAD))),
+      min_elevation_rad_(min_elevation_deg * Constants::DEG2RAD)
 {
     gui_.camera
         .setFOV(45.0f)
@@ -454,6 +455,80 @@ void SatelliteRenderer::drawGroundLinks()
 }
 
 // ---------------------------------------------------------------------------
+// Coverage footprint
+// ---------------------------------------------------------------------------
+
+void SatelliteRenderer::drawCoverageFootprint()
+{
+    if (selected_sat_idx_ < 0 || selected_sat_idx_ >= (int)interp_pos_.size()) return;
+
+    const int idx = selected_sat_idx_;
+    const double r = interp_pos_eci_[idx].norm();    // satellite radius [m]
+    const double R = Constants::EARTH_RADIUS_M;
+
+    // Earth central half-angle for coverage at configured min-elevation:
+    //   sin(η) = R * cos(ε) / r   (nadir angle)
+    //   ρ      = π/2 − ε − η
+    const double eps     = min_elevation_rad_;
+    const double cos_eps = std::cos(eps);
+    const double eta     = std::asin(std::clamp(R * cos_eps / r, 0.0, 1.0));
+    const double rho     = Constants::PI / 2.0 - eps - eta;
+    if (rho <= 0.0) return;
+
+    const float cos_rho = static_cast<float>(std::cos(rho));
+    const float sin_rho = static_cast<float>(std::sin(rho));
+
+    // Sub-satellite direction in scene space
+    const glm::vec3 sub = glm::normalize(interp_pos_[idx]);
+
+    // Orthonormal basis perpendicular to sub
+    const glm::vec3 ref = (std::abs(glm::dot(sub, {0.0f, 0.0f, 1.0f})) > 0.99f)
+                        ? glm::vec3{1.0f, 0.0f, 0.0f}
+                        : glm::vec3{0.0f, 0.0f, 1.0f};
+    const glm::vec3 t1  = glm::normalize(glm::cross(sub, ref));
+    const glm::vec3 t2  = glm::cross(sub, t1);  // already unit (sub, t1 orthonormal)
+
+    // Draw N line-segments tracing the small circle on the sphere surface.
+    // Each point: dir = sub*cos_rho + (t1*cos θ + t2*sin θ)*sin_rho   (unit vector)
+    // Scaled to 1.003× Earth radius to sit just above the surface.
+    constexpr int   N      = 96;
+    constexpr float OFFSET = EARTH_DISPLAY_R * 1.003f;
+    constexpr float PI2    = static_cast<float>(Constants::TWO_PI);
+
+    gui_.setLighting(false);
+
+    glm::vec3 prev;
+    for (int i = 0; i <= N; ++i) {
+        const float angle = PI2 * i / N;
+        const glm::vec3 dir = sub  * cos_rho
+                            + t1   * std::cos(angle) * sin_rho
+                            + t2   * std::sin(angle) * sin_rho;
+        // dir is already unit length (sub,t1,t2 orthonormal)
+        const glm::vec3 pt = dir * OFFSET;
+        if (i > 0)
+            gui_.drawLine(prev, pt, {0.0f, 0.85f, 1.0f}, 1.8f);
+        prev = pt;
+    }
+
+    // Sub-satellite nadir point (small dot on the surface)
+    gui_.drawSphere(sub * EARTH_DISPLAY_R * 1.004f, SAT_DOT_R * 0.7f, {0.0f, 0.85f, 1.0f});
+
+    // Dashed nadir line: Earth surface → satellite (every other segment)
+    {
+        const glm::vec3 surface_pt = sub * EARTH_DISPLAY_R;
+        const glm::vec3 sat_pt     = interp_pos_[idx];
+        constexpr int   SEGS       = 20;
+        for (int i = 0; i < SEGS; i += 2) {   // skip every other → dashed look
+            const glm::vec3 a = glm::mix(surface_pt, sat_pt, float(i)     / SEGS);
+            const glm::vec3 b = glm::mix(surface_pt, sat_pt, float(i + 1) / SEGS);
+            gui_.drawLine(a, b, {0.0f, 0.65f, 0.9f}, 0.8f);
+        }
+    }
+
+    gui_.setLighting(true);
+}
+
+// ---------------------------------------------------------------------------
 // ImGui overlays
 // ---------------------------------------------------------------------------
 
@@ -513,10 +588,20 @@ void SatelliteRenderer::drawTelemetryPanel()
     const Vec3& pos = interp_pos_eci_[idx];   // ECI [m]
     const Vec3& vel = interp_vel_eci_[idx];   // ECI [m/s]
 
-    const double r = pos.norm();
-    const double alt_km = (r - Constants::EARTH_RADIUS_M) / 1000.0;
+    const double r      = pos.norm();
+    const double R_m    = Constants::EARTH_RADIUS_M;
+    const double R_km   = R_m / 1000.0;
+    const double alt_km = (r - R_m) / 1000.0;
 
-    // ECI → ECEF (rotate about Z by -GST)
+    // Coverage footprint at configured min elevation
+    const double eps          = min_elevation_rad_;
+    const double cos_eps      = std::cos(eps);
+    const double eta          = std::asin(std::clamp(R_m * cos_eps / r, 0.0, 1.0));
+    const double rho          = Constants::PI / 2.0 - eps - eta;
+    const double cov_radius_km = R_km * rho;
+    const double cov_area_km2  = Constants::TWO_PI * R_km * R_km * (1.0 - std::cos(rho));
+
+    // ECI → ECEF (rotate about Z by GST)
     const double gst = Constants::EARTH_OMEGA_RAD_S * pb_.sim_time_s;
     const double cx = std::cos(gst), sx = std::sin(gst);
     const double ecef_x =  pos.x * cx + pos.y * sx;
@@ -569,10 +654,18 @@ void SatelliteRenderer::drawTelemetryPanel()
     ImGui::Text("%.1f km", alt_km);  ImGui::NextColumn();
 
     ImGui::Text("Latitude");  ImGui::NextColumn();
-    ImGui::Text("%+.2f\xc2\xb0", lat_deg);  ImGui::NextColumn();  // °
+    ImGui::Text("%+.2f\xc2\xb0", lat_deg);  ImGui::NextColumn();
 
     ImGui::Text("Longitude"); ImGui::NextColumn();
     ImGui::Text("%+.2f\xc2\xb0", lon_deg);  ImGui::NextColumn();
+
+    ImGui::Separator();  ImGui::NextColumn();  ImGui::Separator();  ImGui::NextColumn();
+
+    ImGui::TextDisabled("Cov. radius"); ImGui::NextColumn();
+    ImGui::Text("%.0f km", cov_radius_km);  ImGui::NextColumn();
+
+    ImGui::TextDisabled("Cov. area");   ImGui::NextColumn();
+    ImGui::Text("%.0f km\xc2\xb2", cov_area_km2);  ImGui::NextColumn();  // km²
 
     ImGui::Columns(1);
     ImGui::Separator();
@@ -636,6 +729,7 @@ void SatelliteRenderer::run()
 
         drawStarBackground();
         drawEarth();
+        drawCoverageFootprint();   // ring on Earth surface (drawn above texture)
         drawGroundTargets();
 
         if (!interp_pos_.empty()) {
