@@ -381,8 +381,15 @@ void SatelliteRenderer::drawStarBackground()
 
 void SatelliteRenderer::drawEarth()
 {
+    // The VGL sphere mesh places the north pole at +Y and the prime meridian
+    // at -X (u=0.5 maps to theta=π). Combined with stbi's vertical flip,
+    // Earth's north pole renders at -Y and prime meridian at -X.
+    // Fix: 180° rotation around (0,1,-1)/√2 sends -Y→+Z and -X→+X.
+    static const glm::quat EARTH_BASE_ROT =
+        glm::angleAxis(glm::pi<float>(), glm::normalize(glm::vec3(0.0f, 1.0f, -1.0f)));
+
     gui_.setLightDirection(interp_sun_);
-    gui_.drawTexturedSphere({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R, earth_tex_);
+    gui_.drawTexturedSphere({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R, EARTH_BASE_ROT, earth_tex_);
 
     gui_.setLighting(false);
     gui_.drawCircle({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R * 1.002f,
