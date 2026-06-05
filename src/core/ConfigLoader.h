@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/math/Vec3.h"
 #include <string>
 #include <vector>
 #include <stdexcept>
@@ -12,11 +13,57 @@
 // ---------------------------------------------------------------------------
 
 struct PhysicalProperties {
-    double mass_kg         = 260.0;
+    double mass_kg          = 260.0;
     double drag_coefficient = 2.2;
-    double drag_area_m2    = 2.0;    // cross-sectional area for drag
-    double reflectivity    = 1.3;    // Cr (solar radiation pressure coefficient)
-    double srp_area_m2     = 2.0;    // area for SRP (may differ from drag area)
+    double drag_area_m2     = 2.0;    // cross-sectional area for drag
+    double reflectivity     = 1.3;    // Cr (solar radiation pressure coefficient)
+    double srp_area_m2      = 2.0;    // area for SRP (may differ from drag area)
+    Vec3   inertia_kgm2     = {10.0, 10.0, 5.0}; // diagonal inertia tensor [kg·m²]
+};
+
+// ---------------------------------------------------------------------------
+// Flight software configuration
+// ---------------------------------------------------------------------------
+
+struct GPSSensorConfig {
+    bool   enabled           = true;
+    double update_hz         = 1.0;
+    double position_noise_m  = 5.0;
+    double velocity_noise_ms = 0.02;
+};
+
+struct IMUSensorConfig {
+    bool   enabled          = true;
+    double update_hz        = 100.0;
+    double gyro_noise_rad_s = 1e-4;
+    double gyro_bias_rad_s  = 1e-5;
+};
+
+struct StarTrackerSensorConfig {
+    bool   enabled            = false;
+    double update_hz          = 4.0;
+    double attitude_noise_rad = 3e-4;
+};
+
+struct SensorSuiteConfig {
+    GPSSensorConfig        gps;
+    IMUSensorConfig        imu;
+    StarTrackerSensorConfig star_tracker;
+};
+
+struct WheelSuiteConfig {
+    std::vector<Vec3> spin_axes;     // unit spin axes in body frame; default = 3-axis aligned
+    double max_torque_Nm   = 0.2;
+    double max_momentum_Nms = 4.0;
+};
+
+struct FSWConfig {
+    bool        enabled        = false;
+    std::string adcs_mode      = "nadir";   // "nadir" | "sun_pointing" | "inertial_hold" | "off"
+    double      adcs_update_hz = 10.0;
+    double      od_update_hz   = 1.0;       // orbit determination filter rate
+    SensorSuiteConfig sensors;
+    WheelSuiteConfig  wheels;
 };
 
 struct PhysicsConfig {
@@ -95,6 +142,8 @@ struct SimConfig {
 
     std::vector<GroundTarget> ground_targets;
 
+    FSWConfig   fsw;
+
     std::string output_directory = "output";
     std::string run_name         = "run";
 
@@ -148,9 +197,10 @@ public:
     static double epochStringToJD(const std::string& epoch_str);
 
 private:
-    static SimConfig parseSimConfig(const nlohmann::json& j);
-    static WalkerConfig  parseWalker(const nlohmann::json& j);
+    static SimConfig          parseSimConfig(const nlohmann::json& j);
+    static WalkerConfig       parseWalker(const nlohmann::json& j);
     static PhysicalProperties parseSatellite(const nlohmann::json& j);
-    static PhysicsConfig  parsePhysics(const nlohmann::json& j);
-    static MetricsConfig  parseMetrics(const nlohmann::json& j);
+    static PhysicsConfig      parsePhysics(const nlohmann::json& j);
+    static MetricsConfig      parseMetrics(const nlohmann::json& j);
+    static FSWConfig          parseFSW(const nlohmann::json& j);
 };

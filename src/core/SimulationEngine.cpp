@@ -9,6 +9,8 @@
 #include "environment/EclipseModel.h"
 #include "environment/SunModel.h"
 #include "orbit/OrbitalElements.h"
+#include "gnc/AttitudeDynamics.h"
+#include "gnc/FlightSoftwareStack.h"
 #include "core/math/Constants.h"
 #include <iostream>
 #include <iomanip>
@@ -28,11 +30,11 @@ SimulationEngine::SimulationEngine(const SimConfig& cfg)
 {
     buildPropagator();
 
-    // Apply the satellite physical properties from config to all satellites,
-    // and record static per-satellite metadata for the renderer.
+    // Apply satellite physical properties and initialize FSW.
     for (auto* sat : constellation_.satellites()) {
-        sat->state();  // ensure state is initialized
         const_cast<PhysicalProperties&>(sat->properties()) = cfg.satellite;
+        // Re-init FSW now that inertia_kgm2 is correct.
+        sat->initFSW(cfg_.fsw, cfg_.satellite.inertia_kgm2);
         sat_info_.push_back({sat->id(), sat->planeId(), sat->seatId()});
     }
 }
@@ -89,12 +91,19 @@ void SimulationEngine::broadcastFrame(double time_s) {
     frame.positions.reserve(sats.size());
     frame.velocities.reserve(sats.size());
     frame.in_eclipse.reserve(sats.size());
+    frame.attitude_states.reserve(sats.size());
+    frame.adcs_modes.reserve(sats.size());
 
     for (const auto* sat : sats) {
         frame.positions.push_back(sat->state().position);
         frame.velocities.push_back(sat->state().velocity);
         frame.in_eclipse.push_back(
             EclipseModel::inEclipse(sat->state().position, frame.sun_dir_eci));
+        frame.attitude_states.push_back(sat->attitudeState());
+        const ADCSMode mode = sat->hasFSW() && sat->hasFSW()
+            ? ADCSMode::NADIR  // placeholder; real mode comes from FSW tick
+            : ADCSMode::OFF;
+        frame.adcs_modes.push_back(mode);
     }
 
     (*frame_cb_)(frame);
@@ -133,7 +142,9 @@ ConstellationResult SimulationEngine::run(int run_id) {
         std::lock_guard lock(g_console_mutex);
         std::cout << "[" << cfg_.run_name << "] propagating "
                   << constellation_.totalSatellites() << " satellites for "
-                  << cfg_.duration_days << " days\n";
+                  << cfg_.duration_days << " days"
+                  << (cfg_.fsw.enabled ? " [FSW: " + cfg_.fsw.adcs_mode + "]" : "")
+                  << "\n";
     }
 
     const bool do_traj = (cfg_.trajectory_sample_interval_s > 0.0);
@@ -150,9 +161,24 @@ ConstellationResult SimulationEngine::run(int run_id) {
     metrics_.update(sats, 0.0);
     broadcastFrame(0.0);
 
+    const bool fsw_enabled = cfg_.fsw.enabled;
+
     for (double t = 0.0; t < t_end; t += dt) {
+        const Vec3 sun_dir = SunModel::direction_eci(t, cfg_.epoch_jd);
+
         for (auto* sat : sats) {
+            // 1. Orbital propagation (unchanged)
             propagator_.step(sat->state(), sat->properties(), dt);
+
+            // 2. Attitude dynamics — always integrated (even with FSW disabled,
+            //    attitude evolves under whatever torque was last commanded)
+            AttitudeDynamics::step(sat->attitudeState(),
+                                   sat->properties().inertia_kgm2,
+                                   sat->fswTorqueCommand(),
+                                   dt);
+
+            // 3. FSW tick — internally rate-gates sensor sampling, MEKF, ADCS
+            if (fsw_enabled) sat->fswTick(dt, sun_dir);
         }
         metrics_.update(sats, t + dt);
         broadcastFrame(t + dt);
