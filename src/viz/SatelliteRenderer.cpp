@@ -3,13 +3,16 @@
 #include "viz/SatelliteRenderer.h"
 #include "core/math/Constants.h"
 #include "environment/EarthModel.h"
+#include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <cmath>
 #include <cstdio>
+#include <cfloat>
 #include <algorithm>
 #include <limits>
 
@@ -29,8 +32,10 @@ SatelliteRenderer::SatelliteRenderer(std::shared_ptr<FrameQueue> queue,
       sat_info_(std::move(sat_info)),
       gui_(window_w, window_h, "ConstellationSim"),
       orbital_cam_(3.5f, 25.0f, 20.0f, glm::vec3(0.0f)),
+      orbital_cam_sat_(0.25f, 25.0f, 20.0f, glm::vec3(0.0f)),
       min_elev_sin_(static_cast<float>(std::sin(min_elevation_deg * Constants::DEG2RAD))),
       min_elevation_rad_(min_elevation_deg * Constants::DEG2RAD),
+      min_elev_deg_ui_(static_cast<float>(min_elevation_deg)),
       epoch_jd_(epoch_jd)
 {
     gui_.camera
@@ -46,6 +51,13 @@ SatelliteRenderer::SatelliteRenderer(std::shared_ptr<FrameQueue> queue,
         .setMaxDistance(20.0f)
         .setZoomSensitivity(0.3f)
         .setPanSensitivity(0.25f);
+
+    // Satellite close-up camera — reset per-selection in applyTracking()
+    orbital_cam_sat_
+        .setMinDistance(0.03f)
+        .setMaxDistance(0.8f)
+        .setZoomSensitivity(0.015f)
+        .setPanSensitivity(0.10f);
 
     earth_tex_.loadFromFile("resources/textures/earth.jpg");
     star_tex_.loadFromFile("resources/textures/stars.jpg");
@@ -148,12 +160,18 @@ void SatelliteRenderer::buildInterpState()
     {
         const double dt = hi_frame.time_s - lo_frame.time_s;
         if (dt > 0.0)
+        {
             alpha = std::clamp(
                 static_cast<float>((pb_.sim_time_s - lo_frame.time_s) / dt),
                 0.0f, 1.0f);
+            if (sim_dt_s_ == 0.0f)
+                sim_dt_s_ = static_cast<float>(dt);
+        }
     }
 
     const int n = static_cast<int>(lo_frame.positions.size());
+
+    const bool has_att_data = (static_cast<int>(lo_frame.attitude_states.size()) == n);
 
     if (new_lo != lo_frame_idx_)
     {
@@ -166,6 +184,26 @@ void SatelliteRenderer::buildInterpState()
             while (static_cast<int>(trail_buf_[i].size()) > TRAIL_FRAMES + 1)
                 trail_buf_[i].pop_front();
         }
+
+        // Attitude ring-buffer push (feeds the sensor plot panel)
+        if (has_att_data)
+        {
+            if (static_cast<int>(att_buf_.size()) != n)
+                att_buf_.assign(n, std::deque<AttSample>{});
+            for (int i = 0; i < n; ++i)
+            {
+                const AttitudeState &as = lo_frame.attitude_states[i];
+                AttSample s;
+                s.omega_x = static_cast<float>(as.omega.x);
+                s.omega_y = static_cast<float>(as.omega.y);
+                s.omega_z = static_cast<float>(as.omega.z);
+                s.h_mag = static_cast<float>(as.h_wheels.norm());
+                att_buf_[i].push_back(s);
+                while (static_cast<int>(att_buf_[i].size()) > ATT_BUF_SIZE)
+                    att_buf_[i].pop_front();
+            }
+        }
+
         lo_frame_idx_ = new_lo;
     }
 
@@ -218,6 +256,32 @@ void SatelliteRenderer::buildInterpState()
         }
     }
 
+    // Attitude quaternion interpolation
+    interp_att_.assign(n, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    if (has_att_data)
+    {
+        const bool hi_has_att = has_hi &&
+                                (static_cast<int>(hi_frame.attitude_states.size()) == n);
+        for (int i = 0; i < n; ++i)
+        {
+            const Quat &qa = lo_frame.attitude_states[i].attitude;
+            glm::quat ga(float(qa.w), float(qa.x), float(qa.y), float(qa.z));
+            if (hi_has_att)
+            {
+                const Quat &qb = hi_frame.attitude_states[i].attitude;
+                glm::quat gb(float(qb.w), float(qb.x), float(qb.y), float(qb.z));
+                // Short-path nlerp (cheap and smooth enough at display frame rates)
+                if (glm::dot(ga, gb) < 0.0f)
+                    gb = -gb;
+                interp_att_[i] = glm::normalize(ga * (1.0f - alpha) + gb * alpha);
+            }
+            else
+            {
+                interp_att_[i] = ga;
+            }
+        }
+    }
+
     interp_ecl_ = lo_frame.in_eclipse;
     interp_sun_ = {
         static_cast<float>(lo_frame.sun_dir_eci.x),
@@ -245,9 +309,28 @@ void SatelliteRenderer::buildInterpState()
 void SatelliteRenderer::applyTracking()
 {
     if (selected_sat_idx_ < 0 || selected_sat_idx_ >= (int)interp_pos_.size())
+    {
+        prev_selected_idx_ = -2; // ensure a reset on next selection
+        orbital_cam_.applyToCamera(gui_.camera);
         return;
-    orbital_cam_.setTarget(interp_pos_[selected_sat_idx_]);
-    orbital_cam_.applyToCamera(gui_.camera);
+    }
+
+    // On a new satellite selection, reset the satellite camera to a clean close-up view.
+    // Assignment reconstructs with a fixed initial distance (0.25 scene units ≈ 1600 km).
+    if (selected_sat_idx_ != prev_selected_idx_)
+    {
+        orbital_cam_sat_ = OrbitalCamera(0.25f, 25.0f, 20.0f,
+                                         interp_pos_[selected_sat_idx_]);
+        orbital_cam_sat_
+            .setMinDistance(0.03f)
+            .setMaxDistance(0.8f)
+            .setZoomSensitivity(0.015f)
+            .setPanSensitivity(0.10f);
+        prev_selected_idx_ = selected_sat_idx_;
+    }
+
+    orbital_cam_sat_.setTarget(interp_pos_[selected_sat_idx_]);
+    orbital_cam_sat_.applyToCamera(gui_.camera);
 }
 
 void SatelliteRenderer::updateWindowTitle()
@@ -375,8 +458,17 @@ void SatelliteRenderer::handleInput()
         mouse_delta = mouse_pos - prev_mouse_pos_;
     prev_mouse_pos_ = mouse_pos;
 
-    orbital_cam_.handleInput(gui_, mouse_delta, gui_.getScrollDelta());
-    orbital_cam_.applyToCamera(gui_.camera);
+    // Route orbit control to the active camera
+    if (selected_sat_idx_ >= 0)
+    {
+        orbital_cam_sat_.handleInput(gui_, mouse_delta, gui_.getScrollDelta());
+        orbital_cam_sat_.applyToCamera(gui_.camera);
+    }
+    else
+    {
+        orbital_cam_.handleInput(gui_, mouse_delta, gui_.getScrollDelta());
+        orbital_cam_.applyToCamera(gui_.camera);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -418,12 +510,6 @@ void SatelliteRenderer::drawEarth()
     gui_.setLightDirection(interp_sun_);
     gui_.drawTexturedSphere({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R,
                             sidereal_rot * EARTH_BASE_ROT, earth_tex_);
-
-    gui_.setLighting(false);
-    gui_.drawCircle({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R * 1.002f,
-                    glm::quat(glm::vec3(0.0f, 0.0f, 0.0f)),
-                    {0.3f, 0.5f, 1.0f});
-    gui_.setLighting(true);
 }
 
 void SatelliteRenderer::drawSunIndicator()
@@ -448,25 +534,70 @@ void SatelliteRenderer::drawSatellites()
         return;
     const int n = static_cast<int>(interp_pos_.size());
 
+    // --- Unselected satellites: plain spheres ---
     gui_.setLighting(false);
     for (int i = 0; i < n; ++i)
     {
-        const bool in_ecl = (i < (int)interp_ecl_.size() && interp_ecl_[i]);
-
         if (i == selected_sat_idx_)
-        {
-            // Selection halo + bright dot
-            gui_.drawSphere(interp_pos_[i], SAT_DOT_R * 2.0f, {0.0f, 0.85f, 1.0f});
-            gui_.drawSphere(interp_pos_[i], SAT_DOT_R, {1.0f, 1.0f, 1.0f});
-        }
-        else
-        {
-            const glm::vec3 col = in_ecl
-                                      ? glm::vec3{0.30f, 0.30f, 0.55f}
-                                      : glm::vec3{1.00f, 0.95f, 0.65f};
-            gui_.drawSphere(interp_pos_[i], SAT_DOT_R, col);
-        }
+            continue;
+
+        const bool in_ecl = (i < (int)interp_ecl_.size() && interp_ecl_[i]);
+        const glm::vec3 col = in_ecl
+                                  ? glm::vec3{0.30f, 0.30f, 0.55f}
+                                  : glm::vec3{1.00f, 0.95f, 0.65f};
+        gui_.drawSphere(interp_pos_[i], SAT_DOT_R, col);
     }
+
+    // --- Selected satellite: selection halo + lit oriented cube ---
+    if (selected_sat_idx_ >= 0 && selected_sat_idx_ < n)
+    {
+        const int idx = selected_sat_idx_;
+        const glm::quat &q = (idx < (int)interp_att_.size())
+                                 ? interp_att_[idx]
+                                 : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+
+        // Lit oriented cube: body axes shading makes orientation readable
+        static constexpr glm::vec3 SAT_BOX{0.010f, 0.010f, 0.005f};
+        gui_.setLighting(true);
+        gui_.drawBox(interp_pos_[idx], SAT_BOX, q, {0.85f, 0.92f, 1.0f});
+    }
+
+    gui_.setLighting(true);
+}
+
+void SatelliteRenderer::drawBodyAxes()
+{
+    if (selected_sat_idx_ < 0 ||
+        selected_sat_idx_ >= (int)interp_pos_.size() ||
+        selected_sat_idx_ >= (int)interp_att_.size())
+        return;
+
+    const int idx = selected_sat_idx_;
+    const glm::vec3 &pos = interp_pos_[idx];
+    const glm::quat &q = interp_att_[idx];
+
+    // Arrow length: 2× the cube half-width so axes are clearly visible at close range
+    static constexpr float AXIS_LEN = SAT_DOT_R * 2.0f;
+
+    // Current body axes in ECI (via quaternion rotation)
+    const glm::vec3 bx = q * glm::vec3(1.0f, 0.0f, 0.0f); // body +X
+    const glm::vec3 by = q * glm::vec3(0.0f, 1.0f, 0.0f); // body +Y
+    const glm::vec3 bz = q * glm::vec3(0.0f, 0.0f, 1.0f); // body +Z (nadir face)
+
+    // Nadir target direction in scene space: toward Earth center = -normalize(sat_pos)
+    const glm::vec3 nadir = -glm::normalize(pos);
+
+    gui_.setLighting(false);
+
+    // Body frame (current attitude)
+    gui_.drawArrow(pos, pos + bx * AXIS_LEN, {1.0f, 0.15f, 0.15f}, 2.0f); // X: red
+    gui_.drawArrow(pos, pos + by * AXIS_LEN, {0.15f, 1.0f, 0.15f}, 2.0f); // Y: green
+    gui_.drawArrow(pos, pos + bz * AXIS_LEN, {0.15f, 0.45f, 1.0f}, 2.0f); // Z: blue
+
+    // Target +Z direction (nadir): where body +Z should point in nadir-pointing mode
+    // Drawn slightly longer so it remains visible when body Z is close to aligned
+    gui_.drawArrow(pos, pos + nadir * AXIS_LEN * 1.3f, {1.0f, 0.85f, 0.1f}, 1.5f); // yellow
+
     gui_.setLighting(true);
 }
 
@@ -604,9 +735,6 @@ void SatelliteRenderer::drawCoverageFootprint()
         prev = pt;
     }
 
-    // Sub-satellite nadir point (small dot on the surface)
-    gui_.drawSphere(sub * EARTH_DISPLAY_R * 1.004f, SAT_DOT_R * 0.7f, {0.0f, 0.85f, 1.0f});
-
     // Dashed nadir line: Earth surface → satellite (every other segment)
     {
         const glm::vec3 surface_pt = sub * EARTH_DISPLAY_R;
@@ -623,178 +751,8 @@ void SatelliteRenderer::drawCoverageFootprint()
     gui_.setLighting(true);
 }
 
-// ---------------------------------------------------------------------------
-// 2D Mercator ground track window
-// ---------------------------------------------------------------------------
-
-void SatelliteRenderer::drawMercatorWindow()
-{
-    if (selected_sat_idx_ < 0 || selected_sat_idx_ >= (int)interp_pos_eci_.size())
-    {
-        ground_track_.clear();
-        return;
-    }
-
-    const int idx = selected_sat_idx_;
-    const Vec3 &eci = interp_pos_eci_[idx];
-    const double gst = EarthModel::gmst_rad(epoch_jd_ + pb_.sim_time_s / Constants::SEC_PER_DAY);
-    const double cx = std::cos(gst), sx = std::sin(gst);
-
-    // ECI → ECEF
-    const double ex = eci.x * cx + eci.y * sx;
-    const double ey = -eci.x * sx + eci.y * cx;
-    const double ez = eci.z;
-    const double rr = eci.norm();
-
-    const float cur_lat = static_cast<float>(std::asin(std::clamp(ez / rr, -1.0, 1.0)) * Constants::RAD2DEG);
-    const float cur_lon = static_cast<float>(std::atan2(ey, ex) * Constants::RAD2DEG);
-
-    // Append to trail; clear if simulation looped (playback went backwards)
-    if (!ground_track_.empty())
-    {
-        const float prev_time_wrapped = ground_track_.back().first; // re-use first slot as sentinel
-        (void)prev_time_wrapped;
-    }
-    ground_track_.push_back({cur_lat, cur_lon});
-    if ((int)ground_track_.size() > GROUND_TRACK_MAX)
-        ground_track_.pop_front();
-
-    // --- ImGui window ---
-    ImGui::SetNextWindowSize({600.0f, 320.0f}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowBgAlpha(0.95f);
-    bool open = true;
-    if (!ImGui::Begin("Ground Track", &open,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
-    {
-        ImGui::End();
-        if (!open)
-            selected_sat_idx_ = -1;
-        return;
-    }
-    if (!open)
-    {
-        ImGui::End();
-        selected_sat_idx_ = -1;
-        return;
-    }
-
-    const ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-    const ImVec2 canvas_size = ImGui::GetContentRegionAvail();
-
-    // Earth texture background (equirectangular).
-    // VGL loads with stbi_set_flip_vertically_on_load(true), so OpenGL UV(0,0)
-    // is the south pole. Swap V UVs here so north pole appears at top.
-    ImGui::Image(static_cast<ImTextureID>(static_cast<uintptr_t>(earth_tex_.id())),
-                 canvas_size,
-                 ImVec2(0.0f, 1.0f),  // uv_min: top-left → N pole
-                 ImVec2(1.0f, 0.0f)); // uv_max: bottom-right → S pole
-
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-
-    // Coordinate helper: (lat, lon) in degrees → screen pixel
-    auto toScreen = [&](float lat, float lon) -> ImVec2
-    {
-        return {
-            canvas_pos.x + (lon + 180.0f) / 360.0f * canvas_size.x,
-            canvas_pos.y + (90.0f - lat) / 180.0f * canvas_size.y};
-    };
-
-    // --- Ground track trail ---
-    const int n_trail = static_cast<int>(ground_track_.size());
-    for (int i = 1; i < n_trail; ++i)
-    {
-        const float lon0 = ground_track_[i - 1].second;
-        const float lon1 = ground_track_[i].second;
-        // Skip segments that cross the ±180° antimeridian
-        if (std::abs(lon1 - lon0) > 90.0f)
-            continue;
-
-        const float alpha = static_cast<float>(i) / n_trail;
-        const ImU32 col = IM_COL32(
-            static_cast<int>(20 + 20 * alpha),
-            static_cast<int>(120 + 135 * alpha),
-            static_cast<int>(220 - 20 * alpha), 220);
-        dl->AddLine(toScreen(ground_track_[i - 1].first, lon0),
-                    toScreen(ground_track_[i].first, lon1),
-                    col, 1.5f);
-    }
-
-    // --- Coverage swath circle ---
-    {
-        const double R_m = Constants::EARTH_RADIUS_M;
-        const double eps = min_elevation_rad_;
-        const double eta = std::asin(std::clamp(R_m * std::cos(eps) / rr, 0.0, 1.0));
-        const double rho = Constants::PI / 2.0 - eps - eta;
-
-        if (rho > 0.0)
-        {
-            // Sub-satellite unit vector in ECI
-            const Vec3 sub_eci = eci * (1.0 / rr);
-
-            // Build orthonormal basis in ECI perpendicular to sub_eci
-            const Vec3 ref = (std::abs(sub_eci.z) > 0.99)
-                                 ? Vec3{1, 0, 0}
-                                 : Vec3{0, 0, 1};
-            const Vec3 t1 = sub_eci.cross(ref).normalized();
-            const Vec3 t2 = sub_eci.cross(t1);
-
-            const double cr = std::cos(rho), sr = std::sin(rho);
-            constexpr int N = 72;
-            ImVec2 prev_pt{};
-            float prev_slon = 0.0f;
-            bool has_prev = false;
-
-            for (int i = 0; i <= N; ++i)
-            {
-                const double theta = Constants::TWO_PI * i / N;
-                // 3D point on the coverage circle (ECI unit vector)
-                const Vec3 pt_eci = sub_eci * cr + t1 * (std::cos(theta) * sr) + t2 * (std::sin(theta) * sr);
-
-                // ECI → ECEF
-                const double px_e = pt_eci.x * cx + pt_eci.y * sx;
-                const double py_e = -pt_eci.x * sx + pt_eci.y * cx;
-                const double pz_e = pt_eci.z;
-                const float slat = static_cast<float>(
-                    std::asin(std::clamp(pz_e, -1.0, 1.0)) * Constants::RAD2DEG);
-                const float slon = static_cast<float>(
-                    std::atan2(py_e, px_e) * Constants::RAD2DEG);
-
-                const ImVec2 sp = toScreen(slat, slon);
-                if (has_prev && std::abs(slon - prev_slon) < 90.0f)
-                {
-                    dl->AddLine(prev_pt, sp, IM_COL32(0, 210, 255, 160), 1.2f);
-                }
-                prev_pt = sp;
-                prev_slon = slon;
-                has_prev = true;
-            }
-        }
-    }
-
-    // --- Current sub-satellite point ---
-    const ImVec2 sat_px = toScreen(cur_lat, cur_lon);
-    dl->AddCircleFilled(sat_px, 5.5f, IM_COL32(0, 220, 255, 255));
-    dl->AddCircle(sat_px, 7.5f, IM_COL32(255, 255, 255, 200), 16, 1.2f);
-
-    // Satellite label
-    char label[32];
-    if (idx < (int)sat_info_.size())
-        std::snprintf(label, sizeof(label), " SAT-%03d", sat_info_[idx].id);
-    else
-        std::snprintf(label, sizeof(label), " SAT-%03d", idx);
-    dl->AddText({sat_px.x + 8.0f, sat_px.y - 6.0f},
-                IM_COL32(255, 255, 255, 230), label);
-
-    // Sub-satellite lat/lon readout
-    char coord_buf[64];
-    std::snprintf(coord_buf, sizeof(coord_buf), "%.2f\xc2\xb0 %s  %.2f\xc2\xb0 %s",
-                  std::abs(cur_lat), cur_lat >= 0 ? "N" : "S",
-                  std::abs(cur_lon), cur_lon >= 0 ? "E" : "W");
-    dl->AddText({canvas_pos.x + 4.0f, canvas_pos.y + canvas_size.y - 16.0f},
-                IM_COL32(220, 220, 220, 220), coord_buf);
-
-    ImGui::End();
-}
+// drawMercatorWindow() — logic moved into drawSatellitePanel() GROUND TRACK section.
+void SatelliteRenderer::drawMercatorWindow() {}
 
 // ---------------------------------------------------------------------------
 // ImGui overlays
@@ -822,7 +780,7 @@ void SatelliteRenderer::drawHUD()
     ImGui::Text("%02dd %02dh %02dm %02ds", days, hrs, mins, secs);
 
     ImGui::SameLine(0, 16);
-    ImGui::TextColored({0.9f, 0.9f, 0.5f, 1.0f}, "%.0f\xc3\x97", pb_.speed); // "×" utf-8
+    ImGui::TextColored({0.9f, 0.9f, 0.5f, 1.0f}, "%.0fx", pb_.speed);
 
     ImGui::SameLine(0, 8);
     if (pb_.paused)
@@ -848,154 +806,511 @@ void SatelliteRenderer::drawHUD()
     ImGui::End();
 }
 
-void SatelliteRenderer::drawTelemetryPanel()
+// ---------------------------------------------------------------------------
+// Combined satellite data panel — full-height left panel in split-screen mode
+// ---------------------------------------------------------------------------
+void SatelliteRenderer::drawSatellitePanel()
 {
     if (selected_sat_idx_ < 0 || selected_sat_idx_ >= (int)interp_pos_.size())
+    {
+        ground_track_.clear();
         return;
+    }
 
     const int idx = selected_sat_idx_;
+    const ImGuiIO &io = ImGui::GetIO();
+    const float panel_w = io.DisplaySize.x * SPLIT_FRAC;
+    const float panel_h = io.DisplaySize.y;
 
-    // --- Compute orbital quantities ---
-    const Vec3 &pos = interp_pos_eci_[idx]; // ECI [m]
-    const Vec3 &vel = interp_vel_eci_[idx]; // ECI [m/s]
-
+    // ── Orbital quantities ────────────────────────────────────────────────
+    const Vec3 &pos = interp_pos_eci_[idx];
+    const Vec3 &vel = interp_vel_eci_[idx];
     const double r = pos.norm();
     const double R_m = Constants::EARTH_RADIUS_M;
     const double R_km = R_m / 1000.0;
     const double alt_km = (r - R_m) / 1000.0;
 
-    // Coverage footprint at configured min elevation
-    const double eps = min_elevation_rad_;
-    const double cos_eps = std::cos(eps);
-    const double eta = std::asin(std::clamp(R_m * cos_eps / r, 0.0, 1.0));
-    const double rho = Constants::PI / 2.0 - eps - eta;
+    const double eta = std::asin(std::clamp(R_m * std::cos(min_elevation_rad_) / r, 0.0, 1.0));
+    const double rho = Constants::PI / 2.0 - min_elevation_rad_ - eta;
     const double cov_radius_km = R_km * rho;
     const double cov_area_km2 = Constants::TWO_PI * R_km * R_km * (1.0 - std::cos(rho));
 
-    // ECI → ECEF (rotate about Z by GMST)
     const double gst = EarthModel::gmst_rad(epoch_jd_ + pb_.sim_time_s / Constants::SEC_PER_DAY);
     const double cx = std::cos(gst), sx = std::sin(gst);
     const double ecef_x = pos.x * cx + pos.y * sx;
     const double ecef_y = -pos.x * sx + pos.y * cx;
     const double ecef_z = pos.z;
-
-    const double lat_deg = std::atan2(ecef_z, std::sqrt(ecef_x * ecef_x + ecef_y * ecef_y)) * Constants::RAD2DEG;
-    const double lon_deg = std::atan2(ecef_y, ecef_x) * Constants::RAD2DEG;
+    const float lat_deg = static_cast<float>(
+        std::atan2(ecef_z, std::sqrt(ecef_x * ecef_x + ecef_y * ecef_y)) * Constants::RAD2DEG);
+    const float lon_deg = static_cast<float>(
+        std::atan2(ecef_y, ecef_x) * Constants::RAD2DEG);
 
     const double speed_kms = vel.norm() / 1000.0;
-
-    // Circular-orbit period estimate
     const double period_min = (Constants::TWO_PI * std::sqrt(r * r * r / Constants::GM_EARTH)) / 60.0;
-
-    // Inclination from angular momentum vector h = r × v
-    const Vec3 h = pos.cross(vel);
-    const double h_norm = h.norm();
-    const double inc_deg = (h_norm > 0.0)
-                               ? std::acos(std::clamp(h.z / h_norm, -1.0, 1.0)) * Constants::RAD2DEG
+    const Vec3 h_orb = pos.cross(vel);
+    const double h_norm_val = h_orb.norm();
+    const double inc_deg = (h_norm_val > 0.0)
+                               ? std::acos(std::clamp(h_orb.z / h_norm_val, -1.0, 1.0)) * Constants::RAD2DEG
                                : 0.0;
 
     const bool in_ecl = (idx < (int)interp_ecl_.size()) && interp_ecl_[idx];
 
-    // --- Layout ---
-    ImGui::SetNextWindowPos({8.0f, 38.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({300.0f, 0.0f}, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.88f);
-    ImGui::Begin("Telemetry", nullptr,
-                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+    // ── Ground track update ───────────────────────────────────────────────
+    ground_track_.push_back({lat_deg, lon_deg});
+    if ((int)ground_track_.size() > GROUND_TRACK_MAX)
+        ground_track_.pop_front();
+
+    // ── Style ─────────────────────────────────────────────────────────────
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f, 0.07f, 0.11f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.04f, 0.12f, 0.25f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.0f, 0.22f, 0.45f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.15f, 0.25f, 0.45f, 0.9f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.2f, 0.4f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.15f, 0.35f, 0.65f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 10.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 5.0f));
+
+    // ── Window ────────────────────────────────────────────────────────────
+    char win_title[64];
+    if (idx < (int)sat_info_.size())
+        std::snprintf(win_title, sizeof(win_title), "SAT-%03d", sat_info_[idx].id);
+    else
+        std::snprintf(win_title, sizeof(win_title), "SAT-%03d", idx);
+
+    ImGui::SetNextWindowPos({0.0f, 0.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({panel_w, panel_h}, ImGuiCond_Always);
+    ImGui::Begin(win_title, nullptr,
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse);
 
-    // --- Header ---
+    // ── Header row ───────────────────────────────────────────────────────
+    ImGui::TextColored({0.0f, 0.85f, 1.0f, 1.0f}, "%s", win_title);
     if (idx < (int)sat_info_.size())
     {
-        const auto &info = sat_info_[idx];
-        ImGui::TextColored({0.0f, 0.85f, 1.0f, 1.0f}, "SAT-%03d", info.id);
-        ImGui::SameLine(0, 12);
-        ImGui::TextDisabled("Plane %d  Seat %d", info.plane_id, info.seat_id);
+        ImGui::SameLine(0, 10);
+        ImGui::TextDisabled("Plane %d  Seat %d",
+                            sat_info_[idx].plane_id, sat_info_[idx].seat_id);
     }
-    else
     {
-        ImGui::TextColored({0.0f, 0.85f, 1.0f, 1.0f}, "SAT-%03d", idx);
+        const char *badge_txt = in_ecl ? "[ECL] ECLIPSE" : "[SUN] SUNLIT";
+        const ImVec4 badge_col = in_ecl
+                                     ? ImVec4{0.35f, 0.40f, 0.90f, 1.0f}
+                                     : ImVec4{1.00f, 0.88f, 0.25f, 1.0f};
+        const float badge_w = ImGui::CalcTextSize(badge_txt).x + 4.0f;
+        ImGui::SameLine(panel_w - badge_w - 28.0f);
+        ImGui::TextColored(badge_col, "%s", badge_txt);
     }
-    ImGui::Separator();
 
-    // --- Position ---
-    ImGui::TextColored({0.8f, 0.8f, 0.5f, 1.0f}, "POSITION");
-    ImGui::Columns(2, "pos_cols", false);
-    ImGui::SetColumnWidth(0, 110.0f);
-
-    ImGui::Text("Altitude");
-    ImGui::NextColumn();
-    ImGui::Text("%.1f km", alt_km);
-    ImGui::NextColumn();
-
-    ImGui::Text("Latitude");
-    ImGui::NextColumn();
-    ImGui::Text("%+.2f\xc2\xb0", lat_deg);
-    ImGui::NextColumn();
-
-    ImGui::Text("Longitude");
-    ImGui::NextColumn();
-    ImGui::Text("%+.2f\xc2\xb0", lon_deg);
-    ImGui::NextColumn();
-
-    ImGui::Separator();
-    ImGui::NextColumn();
-    ImGui::Separator();
-    ImGui::NextColumn();
-
-    ImGui::TextDisabled("Cov. radius");
-    ImGui::NextColumn();
-    ImGui::Text("%.0f km", cov_radius_km);
-    ImGui::NextColumn();
-
-    ImGui::TextDisabled("Cov. area");
-    ImGui::NextColumn();
-    ImGui::Text("%.0f km\xc2\xb2", cov_area_km2);
-    ImGui::NextColumn(); // km²
-
-    ImGui::Columns(1);
-    ImGui::Separator();
-
-    // --- Velocity / Orbit ---
-    ImGui::TextColored({0.8f, 0.8f, 0.5f, 1.0f}, "ORBIT");
-    ImGui::Columns(2, "orb_cols", false);
-    ImGui::SetColumnWidth(0, 110.0f);
-
-    ImGui::Text("Speed");
-    ImGui::NextColumn();
-    ImGui::Text("%.3f km/s", speed_kms);
-    ImGui::NextColumn();
-
-    ImGui::Text("Period");
-    ImGui::NextColumn();
-    ImGui::Text("%.1f min", period_min);
-    ImGui::NextColumn();
-
-    ImGui::Text("Inclination");
-    ImGui::NextColumn();
-    ImGui::Text("%.2f\xc2\xb0", inc_deg);
-    ImGui::NextColumn();
-
-    ImGui::Columns(1);
-    ImGui::Separator();
-
-    // --- Status ---
-    ImGui::TextColored({0.8f, 0.8f, 0.5f, 1.0f}, "STATUS");
-    if (in_ecl)
+    // ── Mission time (mini-HUD) ───────────────────────────────────────────
+    const double t = pb_.sim_time_s;
+    ImGui::TextColored({0.40f, 0.50f, 0.75f, 1.0f},
+                       "T+ %02dd %02dh %02dm %02ds",
+                       (int)(t / 86400), (int)(fmod(t, 86400) / 3600),
+                       (int)(fmod(t, 3600) / 60), (int)fmod(t, 60));
+    ImGui::SameLine(0, 16);
+    ImGui::TextColored({0.85f, 0.85f, 0.45f, 1.0f}, "%.0fx", pb_.speed);
+    if (pb_.paused)
     {
-        ImGui::TextColored({0.4f, 0.4f, 0.9f, 1.0f}, "\xe2\x97\x8f Eclipse (shadow)");
+        ImGui::SameLine(0, 8);
+        ImGui::TextColored({1.0f, 0.6f, 0.1f, 1.0f}, "PAUSED");
     }
-    else
+    if (!queue_->isSimDone())
     {
-        ImGui::TextColored({1.0f, 0.95f, 0.4f, 1.0f}, "\xe2\x98\x80 Sunlit");
+        ImGui::SameLine(0, 8);
+        ImGui::TextColored({0.25f, 1.0f, 0.4f, 1.0f}, "[SIM]");
     }
-    ImGui::Separator();
 
-    // --- Deselect ---
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // ── Tab bar ───────────────────────────────────────────────────────────
+    {
+        struct TabDef { PanelTab tab; const char* label; };
+        static constexpr int NUM_TABS = 6;
+        const TabDef tabs[NUM_TABS] = {
+            {PanelTab::ADCS,    "ADCS"},
+            {PanelTab::Power,   "Power"},
+            {PanelTab::Thermal, "Thermal"},
+            {PanelTab::Data,    "Data"},
+            {PanelTab::Faults,  "Faults"},
+            {PanelTab::Viz,     "Viz"},
+        };
+
+        const float avail_w = ImGui::GetContentRegionAvail().x;
+        const float btn_spacing = 4.0f;
+        const float btn_w = (avail_w - btn_spacing * (NUM_TABS - 1)) / NUM_TABS;
+        const float btn_h = 26.0f;
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+        for (int i = 0; i < NUM_TABS; ++i)
+        {
+            if (i > 0) ImGui::SameLine(0, btn_spacing);
+
+            const bool is_active = (active_tab_ == tabs[i].tab);
+            if (is_active)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.35f, 0.7f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.40f, 0.8f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            }
+            else
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.14f, 0.22f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.22f, 0.35f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.60f, 0.70f, 1.0f));
+            }
+
+            if (ImGui::Button(tabs[i].label, {btn_w, btn_h}))
+                active_tab_ = tabs[i].tab;
+
+            ImGui::PopStyleColor(3);
+        }
+        ImGui::PopStyleVar();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // ── Tab content ───────────────────────────────────────────────────────
+    const float col0 = panel_w * 0.42f;
+
+    switch (active_tab_)
+    {
+    // ══════════════════════════════════════════════════════════════════════
+    case PanelTab::ADCS:
+    {
+        ImGui::TextColored({0.5f, 0.7f, 1.0f, 1.0f}, "ATTITUDE DETERMINATION & CONTROL");
+        ImGui::Spacing();
+
+        // Mode / target summary
+        ImGui::Columns(2, "adcs_mode_cols", false);
+        ImGui::SetColumnWidth(0, col0);
+        ImGui::TextDisabled("Mode");
+        ImGui::NextColumn();
+        ImGui::Text("Nadir Pointing");
+        ImGui::NextColumn();
+        ImGui::TextDisabled("Target");
+        ImGui::NextColumn();
+        ImGui::Text("%+.2f lat  %+.2f lon", lat_deg, lon_deg);
+        ImGui::NextColumn();
+        ImGui::Columns(1);
+
+        ImGui::Spacing();
+
+        // IMU angular rates
+        const bool has_att = (idx < (int)att_buf_.size() && !att_buf_[idx].empty());
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::CollapsingHeader("IMU - ANGULAR RATES [rad/s]"))
+        {
+            if (has_att)
+            {
+                const auto &abuf = att_buf_[idx];
+                const int bn = static_cast<int>(abuf.size());
+
+                std::vector<float> wx(bn), wy(bn), wz(bn);
+                for (int i = 0; i < bn; ++i)
+                {
+                    wx[i] = abuf[i].omega_x;
+                    wy[i] = abuf[i].omega_y;
+                    wz[i] = abuf[i].omega_z;
+                }
+                constexpr float PH = 42.0f;
+
+                ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(1.0f, 0.30f, 0.30f, 1.0f));
+                ImGui::PlotLines("##wx", wx.data(), bn, 0, "wx", FLT_MIN, FLT_MAX, {-1.0f, PH});
+                ImGui::PopStyleColor();
+
+                ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(0.30f, 1.0f, 0.30f, 1.0f));
+                ImGui::PlotLines("##wy", wy.data(), bn, 0, "wy", FLT_MIN, FLT_MAX, {-1.0f, PH});
+                ImGui::PopStyleColor();
+
+                ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(0.30f, 0.55f, 1.0f, 1.0f));
+                ImGui::PlotLines("##wz", wz.data(), bn, 0, "wz", FLT_MIN, FLT_MAX, {-1.0f, PH});
+                ImGui::PopStyleColor();
+
+                const AttSample &cur = abuf.back();
+                ImGui::TextColored({1.0f, 0.30f, 0.30f, 1.0f}, "wx");
+                ImGui::SameLine(0, 4);
+                ImGui::Text("% .5f", cur.omega_x);
+                ImGui::SameLine(0, 16);
+                ImGui::TextColored({0.30f, 1.0f, 0.30f, 1.0f}, "wy");
+                ImGui::SameLine(0, 4);
+                ImGui::Text("% .5f", cur.omega_y);
+                ImGui::SameLine(0, 16);
+                ImGui::TextColored({0.30f, 0.55f, 1.0f, 1.0f}, "wz");
+                ImGui::SameLine(0, 4);
+                ImGui::Text("% .5f", cur.omega_z);
+            }
+            else
+            {
+                ImGui::TextDisabled("(FSW disabled - no attitude data)");
+            }
+        }
+
+        // Reaction wheels
+        if (has_att)
+        {
+            ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+            if (ImGui::CollapsingHeader("REACTION WHEELS [N.m.s]"))
+            {
+                const auto &abuf = att_buf_[idx];
+                const int bn = static_cast<int>(abuf.size());
+                std::vector<float> hm(bn);
+                for (int i = 0; i < bn; ++i)
+                    hm[i] = abuf[i].h_mag;
+
+                constexpr float PH = 42.0f;
+                ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(1.0f, 0.75f, 0.2f, 1.0f));
+                ImGui::PlotLines("##hm", hm.data(), bn, 0, "|h_w|", 0.0f, FLT_MAX, {-1.0f, PH});
+                ImGui::PopStyleColor();
+
+                const AttSample &cur = abuf.back();
+                ImGui::TextDisabled("|h_wheels|");
+                ImGui::SameLine(0, 8);
+                ImGui::Text("%.6f N.m.s", cur.h_mag);
+            }
+        }
+
+        // Body axes legend
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::CollapsingHeader("3D BODY AXES"))
+        {
+            ImGui::TextColored({1.00f, 0.25f, 0.25f, 1.0f}, "[+X]");
+            ImGui::SameLine(0, 10);
+            ImGui::TextColored({0.25f, 1.00f, 0.25f, 1.0f}, "[+Y]");
+            ImGui::SameLine(0, 10);
+            ImGui::TextColored({0.25f, 0.50f, 1.00f, 1.0f}, "[+Z]");
+            ImGui::SameLine(0, 10);
+            ImGui::TextColored({1.00f, 0.85f, 0.10f, 1.0f}, "[+Z target / nadir]");
+        }
+        break;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    case PanelTab::Power:
+    {
+        ImGui::TextColored({0.5f, 0.7f, 1.0f, 1.0f}, "ELECTRICAL POWER SYSTEM");
+        ImGui::Spacing();
+        ImGui::TextDisabled("No power telemetry available.");
+        break;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    case PanelTab::Thermal:
+    {
+        ImGui::TextColored({0.5f, 0.7f, 1.0f, 1.0f}, "THERMAL CONTROL");
+        ImGui::Spacing();
+        ImGui::TextDisabled("No thermal telemetry available.");
+        break;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    case PanelTab::Data:
+    {
+        ImGui::TextColored({0.5f, 0.7f, 1.0f, 1.0f}, "ORBIT & POSITION DATA");
+        ImGui::Spacing();
+
+        // Position
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::CollapsingHeader("POSITION"))
+        {
+            ImGui::Columns(2, "pos_cols", false);
+            ImGui::SetColumnWidth(0, col0);
+
+            ImGui::TextDisabled("Altitude");
+            ImGui::NextColumn();
+            ImGui::Text("%.1f km", alt_km);
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("Lat / Lon");
+            ImGui::NextColumn();
+            ImGui::Text("%+.3f deg  %+.3f deg", lat_deg, lon_deg);
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("Cov. radius");
+            ImGui::NextColumn();
+            ImGui::Text("%.0f km", cov_radius_km);
+            ImGui::NextColumn();
+            ImGui::TextDisabled("Cov. area");
+            ImGui::NextColumn();
+            ImGui::Text("%.0f km^2", cov_area_km2);
+            ImGui::NextColumn();
+
+            ImGui::Columns(1);
+        }
+
+        // Orbit
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::CollapsingHeader("ORBIT"))
+        {
+            ImGui::Columns(2, "orb_cols", false);
+            ImGui::SetColumnWidth(0, col0);
+
+            ImGui::TextDisabled("Speed");
+            ImGui::NextColumn();
+            ImGui::Text("%.3f km/s", speed_kms);
+            ImGui::NextColumn();
+            ImGui::TextDisabled("Period");
+            ImGui::NextColumn();
+            ImGui::Text("%.1f min", period_min);
+            ImGui::NextColumn();
+            ImGui::TextDisabled("Inclination");
+            ImGui::NextColumn();
+            ImGui::Text("%.2f deg", inc_deg);
+            ImGui::NextColumn();
+
+            ImGui::Columns(1);
+        }
+        break;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    case PanelTab::Faults:
+    {
+        ImGui::TextColored({0.5f, 0.7f, 1.0f, 1.0f}, "FAULT MANAGEMENT");
+        ImGui::Spacing();
+        ImGui::TextDisabled("No active faults.");
+        break;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    case PanelTab::Viz:
+    {
+        ImGui::TextColored({0.5f, 0.7f, 1.0f, 1.0f}, "VISUALIZATION & CONFIG");
+        ImGui::Spacing();
+
+        // Ground track
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::CollapsingHeader("GROUND TRACK"))
+        {
+            if (ImGui::BeginChild("##gt_child", {0.0f, 180.0f}, false, ImGuiWindowFlags_NoScrollbar))
+            {
+                const ImVec2 cp = ImGui::GetCursorScreenPos();
+                const ImVec2 cs = ImGui::GetContentRegionAvail();
+
+                ImGui::Image(static_cast<ImTextureID>(static_cast<uintptr_t>(earth_tex_.id())),
+                             cs, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+
+                ImDrawList *dl = ImGui::GetWindowDrawList();
+
+                auto toScreen = [&](float lat, float lon) -> ImVec2
+                {
+                    return {cp.x + (lon + 180.0f) / 360.0f * cs.x,
+                            cp.y + (90.0f - lat) / 180.0f * cs.y};
+                };
+
+                const int n_trail = static_cast<int>(ground_track_.size());
+                for (int i = 1; i < n_trail; ++i)
+                {
+                    const float lon0 = ground_track_[i - 1].second;
+                    const float lon1 = ground_track_[i].second;
+                    if (std::abs(lon1 - lon0) > 90.0f)
+                        continue;
+                    const float a = static_cast<float>(i) / n_trail;
+                    const ImU32 col = IM_COL32(
+                        static_cast<int>(20 + 20 * a),
+                        static_cast<int>(120 + 135 * a),
+                        static_cast<int>(220 - 20 * a), 220);
+                    dl->AddLine(toScreen(ground_track_[i - 1].first, lon0),
+                                toScreen(ground_track_[i].first, lon1), col, 1.5f);
+                }
+
+                if (rho > 0.0)
+                {
+                    const Vec3 sub_eci = pos * (1.0 / r);
+                    const Vec3 ref_ = (std::abs(sub_eci.z) > 0.99) ? Vec3{1, 0, 0} : Vec3{0, 0, 1};
+                    const Vec3 t1 = sub_eci.cross(ref_).normalized();
+                    const Vec3 t2 = sub_eci.cross(t1);
+                    const double cr = std::cos(rho), sr = std::sin(rho);
+                    constexpr int N = 72;
+                    ImVec2 prev_sp{};
+                    float prev_slon = 0.0f;
+                    bool has_prev = false;
+                    for (int i = 0; i <= N; ++i)
+                    {
+                        const double theta = Constants::TWO_PI * i / N;
+                        const Vec3 pt = sub_eci * cr + t1 * (std::cos(theta) * sr) + t2 * (std::sin(theta) * sr);
+                        const double px_e = pt.x * cx + pt.y * sx;
+                        const double py_e = -pt.x * sx + pt.y * cx;
+                        const float slat = static_cast<float>(
+                            std::asin(std::clamp(pt.z, -1.0, 1.0)) * Constants::RAD2DEG);
+                        const float slon = static_cast<float>(
+                            std::atan2(py_e, px_e) * Constants::RAD2DEG);
+                        const ImVec2 sp = toScreen(slat, slon);
+                        if (has_prev && std::abs(slon - prev_slon) < 90.0f)
+                            dl->AddLine(prev_sp, sp, IM_COL32(0, 210, 255, 160), 1.2f);
+                        prev_sp = sp;
+                        prev_slon = slon;
+                        has_prev = true;
+                    }
+                }
+
+                const ImVec2 sat_px = toScreen(lat_deg, lon_deg);
+                dl->AddCircleFilled(sat_px, 5.5f, IM_COL32(0, 220, 255, 255));
+                dl->AddCircle(sat_px, 7.5f, IM_COL32(255, 255, 255, 200), 16, 1.2f);
+
+                char coord_buf[64];
+                std::snprintf(coord_buf, sizeof(coord_buf), "%.2f %s  %.2f %s",
+                              std::abs(lat_deg), lat_deg >= 0 ? "N" : "S",
+                              std::abs(lon_deg), lon_deg >= 0 ? "E" : "W");
+                dl->AddText({cp.x + 4.0f, cp.y + cs.y - 16.0f},
+                            IM_COL32(220, 220, 220, 220), coord_buf);
+            }
+            ImGui::EndChild();
+        }
+
+        // Simulation config
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::CollapsingHeader("SIMULATION CONFIG"))
+        {
+            float speed_f = static_cast<float>(pb_.speed);
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::SliderFloat("Speed##cfg", &speed_f, 1.0f, 1000.0f, "%.0fx"))
+                pb_.speed = speed_f;
+
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::SliderFloat("Min Elev##cfg", &min_elev_deg_ui_, 0.0f, 45.0f, "%.1f deg"))
+            {
+                min_elevation_rad_ = static_cast<double>(min_elev_deg_ui_) * Constants::DEG2RAD;
+                min_elev_sin_ = std::sin(static_cast<float>(min_elevation_rad_));
+            }
+
+            ImGui::Spacing();
+
+            ImGui::Columns(2, "cfg_cols", false);
+            ImGui::SetColumnWidth(0, col0);
+
+            ImGui::TextDisabled("Frame dt");
+            ImGui::NextColumn();
+            if (sim_dt_s_ > 0.0f)
+                ImGui::Text("%.4f s  (%.1f Hz)", sim_dt_s_, 1.0f / sim_dt_s_);
+            else
+                ImGui::TextDisabled("--");
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("Config");
+            ImGui::NextColumn();
+            ImGui::TextDisabled("see JSON");
+            ImGui::NextColumn();
+
+            ImGui::Columns(1);
+        }
+        break;
+    }
+    } // end switch
+
+    // ── Deselect ──────────────────────────────────────────────────────────
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
     if (ImGui::Button("Deselect  [Esc]", {-1.0f, 0.0f}))
         selected_sat_idx_ = -1;
 
     ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(6);
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,10 +1321,15 @@ void SatelliteRenderer::drawAxesOverlay()
     const ImGuiIO &io = ImGui::GetIO();
     ImDrawList *dl = ImGui::GetForegroundDrawList();
 
-    // Origin: 80 px from the bottom-left corner
+    // Origin: 80 px from a corner.
+    // In split mode, move to the bottom-right of the 3D viewport so it isn't
+    // hidden behind the data panel.
     const float margin = 80.0f;
     const float arm = 50.0f;
-    const ImVec2 origin(margin, io.DisplaySize.y - margin);
+    const float ox = (scene_x_win_ > 0)
+                         ? io.DisplaySize.x - margin // bottom-right in split mode
+                         : margin;                   // bottom-left normally
+    const ImVec2 origin(ox, io.DisplaySize.y - margin);
 
     // Background disc for contrast
     dl->AddCircleFilled(origin, arm * 0.65f, IM_COL32(0, 0, 0, 120), 32);
@@ -1089,8 +1409,6 @@ void SatelliteRenderer::run()
 {
     while (!gui_.shouldClose())
     {
-        // --- ImGui new frame (before gui_.beginFrame() so camera tracking
-        //     happens before shader matrices are uploaded) ---
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -1098,17 +1416,46 @@ void SatelliteRenderer::run()
         advancePlayback();
         handleInput();
         buildInterpState();
-
-        // Apply satellite tracking BEFORE beginFrame so the shader gets the
-        // updated camera matrices.
         applyTracking();
 
-        // --- Scene render ---
+        // ── Split-screen geometry ─────────────────────────────────────────
+        // When a satellite is selected: left SPLIT_FRAC = data panel (ImGui),
+        // right (1-SPLIT_FRAC) = 3D scene rendered into a restricted viewport.
+        const bool sat_view = (selected_sat_idx_ >= 0 &&
+                               selected_sat_idx_ < (int)interp_pos_.size());
+
+        const int fw = gui_.getFramebufferWidth();
+        const int fh = gui_.getFramebufferHeight();
+        const int ww = gui_.getWindowWidth();
+
+        int scene_x_fb = 0, scene_w_fb = fw;
+        if (sat_view)
+        {
+            const float dpi = (float)fw / ww;
+            const int pw_win = static_cast<int>(ww * SPLIT_FRAC);
+            scene_x_win_ = pw_win;
+            scene_x_fb = static_cast<int>(pw_win * dpi);
+            scene_w_fb = fw - scene_x_fb;
+            // Use right-half aspect so the projection is correct for that viewport
+            gui_.setAspectOverride((float)scene_w_fb / fh);
+        }
+        else
+        {
+            scene_x_win_ = 0;
+            gui_.clearAspectOverride();
+        }
+
+        // ── 3D scene ──────────────────────────────────────────────────────
+        // beginFrame clears the full buffer and uploads the (possibly overridden)
+        // projection matrix. We then restrict the viewport to the right half.
         gui_.beginFrame();
+
+        if (sat_view)
+            glViewport(scene_x_fb, 0, scene_w_fb, fh);
 
         drawStarBackground();
         drawEarth();
-        drawCoverageFootprint(); // ring on Earth surface (drawn above texture)
+        drawCoverageFootprint();
         drawGroundTargets();
 
         if (!interp_pos_.empty())
@@ -1117,14 +1464,19 @@ void SatelliteRenderer::run()
             drawMoonIndicator();
             drawTrails();
             drawSatellites();
+            drawBodyAxes();
             drawGroundLinks();
         }
 
-        // --- ImGui overlays (rendered on top of the 3D scene) ---
-        drawHUD();
-        drawTelemetryPanel();
-        drawMercatorWindow();
-        drawAxesOverlay();
+        // Restore full viewport before ImGui renders
+        if (sat_view)
+            glViewport(0, 0, fw, fh);
+
+        // ── ImGui overlays ────────────────────────────────────────────────
+        if (!sat_view)
+            drawHUD();        // HUD only shown when no satellite selected
+        drawSatellitePanel(); // combined left panel (no-op when none selected)
+        drawAxesOverlay();    // ECI axes widget, repositioned in split mode
 
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

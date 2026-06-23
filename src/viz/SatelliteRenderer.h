@@ -38,8 +38,11 @@ public:
     static constexpr float  SAT_DOT_R       = 0.012f;
     static constexpr float  SAT_PICK_R      = 0.035f;  // ray-cast hit radius (larger than visual)
 
-    static constexpr int TRAIL_FRAMES   = 90;
-    static constexpr int TRAIL_MAX_SATS = 200;
+    static constexpr int   TRAIL_FRAMES   = 90;
+    static constexpr int   TRAIL_MAX_SATS = 200;
+
+    // Fraction of window width occupied by the data panel in satellite-selected mode
+    static constexpr float SPLIT_FRAC = 0.40f;
 
     SatelliteRenderer(std::shared_ptr<FrameQueue>                    queue,
                       std::vector<GroundTarget>                      ground_targets = {},
@@ -57,7 +60,8 @@ private:
     std::shared_ptr<FrameQueue>                   queue_;
     std::vector<SimulationEngine::SatelliteInfo>  sat_info_;
     GUI           gui_;
-    OrbitalCamera orbital_cam_;
+    OrbitalCamera orbital_cam_;      // planet-scale view (no satellite selected)
+    OrbitalCamera orbital_cam_sat_;  // satellite close-up view (satellite selected)
 
     // ---------------------------------------------------------------------------
     // Playback state
@@ -78,6 +82,8 @@ private:
     glm::vec2 prev_mouse_pos_{0.0f};
 
     int   selected_sat_idx_{-1};              // -1 = none
+    int   prev_selected_idx_{-2};            // used to detect new-selection camera reset
+    int   scene_x_win_{0};                   // left edge of 3D viewport (window coords)
     glm::vec2 mouse_at_press_{0.0f};          // position when left-button was pressed
     bool      drag_started_{false};
     static constexpr float CLICK_DRAG_THRESHOLD = 5.0f;  // pixels
@@ -89,18 +95,28 @@ private:
     Texture star_tex_;
 
     // ---------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     // Per-render-tick interpolated state
     // ---------------------------------------------------------------------------
     std::vector<glm::vec3> interp_pos_;       // scene-space satellite positions
     std::vector<Vec3>      interp_pos_eci_;   // ECI positions [m]  — for telemetry
     std::vector<Vec3>      interp_vel_eci_;   // ECI velocities [m/s] — for telemetry
     std::vector<bool>      interp_ecl_;
+    std::vector<glm::quat> interp_att_;       // body-to-ECI attitude quaternions
     glm::vec3              interp_sun_{1.0f, 0.0f, 0.0f};
     glm::vec3              interp_moon_{0.0f, 1.0f, 0.0f};
     int                    lo_frame_idx_{-1};
+    float                  sim_dt_s_{0.0f};      // derived from consecutive frame timestamps
 
     // Trail ring-buffer per satellite
     std::vector<std::deque<glm::vec3>> trail_buf_;
+
+    // ---------------------------------------------------------------------------
+    // Attitude / sensor data ring buffers (for real-time plots)
+    // ---------------------------------------------------------------------------
+    struct AttSample { float omega_x, omega_y, omega_z, h_mag; };
+    static constexpr int ATT_BUF_SIZE = 256;
+    std::vector<std::deque<AttSample>> att_buf_;
 
     // ---------------------------------------------------------------------------
     // 2D Mercator ground track
@@ -121,10 +137,17 @@ private:
     std::vector<GroundTargetViz> ground_targets_;
     float                        min_elev_sin_{0.0f};
     double                       min_elevation_rad_{0.0};
+    float                        min_elev_deg_ui_{10.0f};  // editable copy for CONFIG slider
     double                       epoch_jd_{Constants::J2000_JD};
     std::vector<glm::vec3>       gt_scene_pos_;
 
     static constexpr float GT_MARKER_R = 0.018f;
+
+    // ---------------------------------------------------------------------------
+    // Panel tab state
+    // ---------------------------------------------------------------------------
+    enum class PanelTab { ADCS, Power, Thermal, Data, Faults, Viz };
+    PanelTab active_tab_{PanelTab::ADCS};
 
     // ---------------------------------------------------------------------------
     // Internal helpers
@@ -140,6 +163,7 @@ private:
     void drawSunIndicator();
     void drawMoonIndicator();
     void drawSatellites();
+    void drawBodyAxes();             // body-frame XYZ arrows for selected satellite
     void drawTrails();
     void drawGroundTargets();
     void drawGroundLinks();
@@ -147,8 +171,8 @@ private:
 
     // ImGui overlays
     void drawHUD();
-    void drawTelemetryPanel();
-    void drawAxesOverlay();   // ECI frame indicator, bottom-left corner
+    void drawSatellitePanel();       // combined left-panel: telemetry + IMU + wheels
+    void drawAxesOverlay();          // ECI frame indicator (repositioned in split mode)
 
     // Returns the index of the satellite under the given screen-space position,
     // or -1 if no satellite was hit.
